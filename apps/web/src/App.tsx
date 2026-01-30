@@ -62,7 +62,9 @@ function App() {
   const [vhsIntensity, setVhsIntensity] = useState(0.7)
   const [glitchAmount, setGlitchAmount] = useState(0.2)
   const [includeClipAudio, setIncludeClipAudio] = useState(false)
-  const [ntscPreset, setNtscPreset] = useState<'custom' | 'semi-sharp' | 'game-tape'>('custom')
+  const [ntscPreset, setNtscPreset] = useState<
+    'custom' | 'semi-sharp' | 'game-tape' | 'dynamic'
+  >('custom')
   const [jobId, setJobId] = useState<string | null>(null)
   const [jobStatus, setJobStatus] = useState<JobStatus | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
@@ -386,12 +388,15 @@ function App() {
             <select
               value={ntscPreset}
               onChange={(event) =>
-                setNtscPreset(event.target.value as 'custom' | 'semi-sharp' | 'game-tape')
+                setNtscPreset(
+                  event.target.value as 'custom' | 'semi-sharp' | 'game-tape' | 'dynamic',
+                )
               }
             >
               <option value="custom">Custom (latest)</option>
               <option value="semi-sharp">Semi-sharp</option>
               <option value="game-tape">Game tape</option>
+              <option value="dynamic">Dynamic mix</option>
             </select>
           </div>
         </div>

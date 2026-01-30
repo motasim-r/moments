@@ -32,7 +32,7 @@ ln -s /Applications/ntsc-rs.app/Contents/MacOS/ntsc-rs-cli /usr/local/bin/ntsc-r
 export NTSC_RS_CLI_PATH=/Applications/ntsc-rs.app/Contents/MacOS/ntsc-rs-cli
 ```
 
-Presets live in `server/presets/ntsc`. The default preset is `ntsc_custom.json` (based on the provided settings), and you can override by setting `ntsc_preset` in job settings (e.g., `semi-sharp`, `game-tape`).
+Presets live in `server/presets/ntsc`. The default preset is `ntsc_custom.json` (based on the provided settings), and you can override by setting `ntsc_preset` in job settings (e.g., `semi-sharp`, `game-tape`, or `dynamic` for per-segment variation).
 
 ### 3) Start the UI
 ```bash

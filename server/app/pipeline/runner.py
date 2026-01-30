@@ -87,6 +87,106 @@ def _resolve_ntsc_preset(settings: dict[str, Any]) -> Path:
     return preset_path
 
 
+def _load_preset(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text())
+
+
+def _write_preset(path: Path, payload: dict[str, Any]) -> None:
+    path.write_text(json.dumps(payload, indent=2))
+
+
+def _build_ntsc_segments(total_length: float, rng: random.Random) -> list[tuple[float, float]]:
+    segments: list[tuple[float, float]] = []
+    cursor = 0.0
+    min_len = 1.6
+    max_len = 4.0
+    while cursor < total_length - 0.01:
+        seg_len = rng.uniform(min_len, max_len)
+        end = min(total_length, cursor + seg_len)
+        segments.append((round(cursor, 3), round(end, 3)))
+        cursor = end
+    return segments
+
+
+def _render_dynamic_ntsc(
+    paths: JobPaths,
+    base_path: Path,
+    target_length: float,
+    rng: random.Random,
+) -> Path:
+    segment_dir = paths.output_dir / "ntsc_segments"
+    segment_dir.mkdir(parents=True, exist_ok=True)
+
+    preset_paths = [
+        NTSC_PRESETS["custom"],
+        NTSC_PRESETS["semi-sharp"],
+        NTSC_PRESETS["game-tape"],
+    ]
+
+    segments = _build_ntsc_segments(target_length, rng)
+    ntsc_segments: list[Path] = []
+
+    for idx, (start, end) in enumerate(segments, start=1):
+        segment_path = segment_dir / f"seg_{idx:02d}.mp4"
+        run_ffmpeg(
+            [
+                "ffmpeg",
+                "-y",
+                "-ss",
+                str(start),
+                "-to",
+                str(end),
+                "-i",
+                str(base_path),
+                "-c:v",
+                "libx264",
+                "-preset",
+                "veryfast",
+                "-crf",
+                "20",
+                "-an",
+                str(segment_path),
+            ]
+        )
+
+        preset_source = rng.choice(preset_paths)
+        preset_payload = _load_preset(preset_source)
+        preset_payload["random_seed"] = rng.randint(0, 2**31 - 1)
+        preset_path = segment_dir / f"preset_{idx:02d}.json"
+        _write_preset(preset_path, preset_payload)
+
+        ntsc_segment = segment_dir / f"seg_{idx:02d}_ntsc.mp4"
+        run_ntsc_cli(segment_path, ntsc_segment, preset_path)
+        ntsc_segments.append(ntsc_segment)
+
+    concat_list = segment_dir / "concat.txt"
+    concat_list.write_text("\n".join(f"file '{path.as_posix()}'" for path in ntsc_segments))
+
+    ntsc_path = paths.output_dir / "ntsc.mp4"
+    run_ffmpeg(
+        [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(concat_list),
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "20",
+            "-an",
+            str(ntsc_path),
+        ]
+    )
+
+    return ntsc_path
+
+
 def preprocess_clips(paths: JobPaths, clips: list[ClipInput]) -> list[ProxyClip]:
     proxies: list[ProxyClip] = []
     for clip in clips:
@@ -282,9 +382,16 @@ def render_reel(
     vhs_engine = str(settings.get("vhs_engine", "ntsc-rs")).lower()
 
     if vhs_engine == "ntsc-rs":
-        preset_path = _resolve_ntsc_preset(settings)
-        ntsc_path = paths.output_dir / "ntsc.mp4"
-        run_ntsc_cli(base_path, ntsc_path, preset_path)
+        ntsc_mode = str(settings.get("ntsc_preset", "custom")).lower()
+        if ntsc_mode == "dynamic":
+            seed = int(edl["settings"].get("seed", 0))
+            rng = random.Random(seed + 77)
+            ntsc_path = _render_dynamic_ntsc(paths, base_path, target_length, rng)
+        else:
+            preset_path = _resolve_ntsc_preset(settings)
+            ntsc_path = paths.output_dir / "ntsc.mp4"
+            run_ntsc_cli(base_path, ntsc_path, preset_path)
+
         try:
             run_ffmpeg(
                 [
