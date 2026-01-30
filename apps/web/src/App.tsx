@@ -1,0 +1,423 @@
+import { useEffect, useMemo, useState } from 'react'
+import './App.css'
+
+type ClipItem = {
+  id: string
+  file: File
+  locked: boolean
+}
+
+type JobStatus = {
+  status: string
+  step?: string
+  progress?: number
+  message?: string
+  artifact_urls?: {
+    preview?: string
+    final?: string
+    edl?: string
+  }
+}
+
+const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000'
+
+const allowedClipExt = ['mp4', 'mov', 'webm']
+const allowedSongExt = ['mp3', 'm4a', 'wav']
+
+const createId = () =>
+  typeof crypto !== 'undefined' && 'randomUUID' in crypto
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random()}`
+
+function formatSize(bytes: number) {
+  const units = ['B', 'KB', 'MB', 'GB']
+  let size = bytes
+  let unitIndex = 0
+  while (size > 1024 && unitIndex < units.length - 1) {
+    size /= 1024
+    unitIndex += 1
+  }
+  return `${size.toFixed(1)} ${units[unitIndex]}`
+}
+
+function getFileExt(name: string) {
+  const parts = name.toLowerCase().split('.')
+  return parts.length > 1 ? parts[parts.length - 1] : ''
+}
+
+function App() {
+  const [clips, setClips] = useState<ClipItem[]>([])
+  const [song, setSong] = useState<File | null>(null)
+  const [targetLength, setTargetLength] = useState(15)
+  const [vibe, setVibe] = useState<'hype' | 'chill' | 'chaotic'>('hype')
+  const [vhsIntensity, setVhsIntensity] = useState(0.7)
+  const [glitchAmount, setGlitchAmount] = useState(0.2)
+  const [includeClipAudio, setIncludeClipAudio] = useState(false)
+  const [jobId, setJobId] = useState<string | null>(null)
+  const [jobStatus, setJobStatus] = useState<JobStatus | null>(null)
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+  const [finalUrl, setFinalUrl] = useState<string | null>(null)
+  const [edlText, setEdlText] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const lockedClipNames = useMemo(
+    () => clips.filter((clip) => clip.locked).map((clip) => clip.file.name),
+    [clips],
+  )
+
+  const handleClipFiles = (files: FileList | null) => {
+    if (!files) return
+    const next: ClipItem[] = []
+    Array.from(files).forEach((file) => {
+      const ext = getFileExt(file.name)
+      if (!allowedClipExt.includes(ext)) {
+        return
+      }
+      next.push({
+        id: createId(),
+        file,
+        locked: false,
+      })
+    })
+    setClips((current) => [...current, ...next].slice(0, 20))
+  }
+
+  const handleSongFile = (files: FileList | null) => {
+    if (!files || files.length === 0) return
+    const file = files[0]
+    const ext = getFileExt(file.name)
+    if (!allowedSongExt.includes(ext)) {
+      setError('Unsupported song format')
+      return
+    }
+    setSong(file)
+  }
+
+  const handleGenerate = async () => {
+    setError(null)
+    setEdlText(null)
+    setPreviewUrl(null)
+    setFinalUrl(null)
+    if (clips.length === 0) {
+      setError('Please add at least one clip.')
+      return
+    }
+    if (!song) {
+      setError('Please add a song.')
+      return
+    }
+
+    const payload = new FormData()
+    clips.forEach((clip) => payload.append('clips', clip.file))
+    payload.append('song', song)
+    payload.append(
+      'settings',
+      JSON.stringify({
+        target_length_s: targetLength,
+        vibe,
+        vhs_intensity: vhsIntensity,
+        glitch_amount: glitchAmount,
+        include_clip_audio: includeClipAudio,
+        locked_clips: lockedClipNames,
+        seed: Math.floor(Math.random() * 1_000_000),
+      }),
+    )
+
+    const response = await fetch(`${API_BASE}/jobs`, {
+      method: 'POST',
+      body: payload,
+    })
+    if (!response.ok) {
+      const detail = await response.json().catch(() => ({}))
+      setError(detail.detail ?? 'Failed to create job')
+      return
+    }
+    const result = (await response.json()) as { job_id: string }
+    setJobId(result.job_id)
+    setJobStatus({ status: 'queued', progress: 0 })
+  }
+
+  const handleRegenerate = () => {
+    if (!jobId) return
+    void handleGenerate()
+  }
+
+  const handleShowEdl = async () => {
+    if (!jobId) return
+    const response = await fetch(`${API_BASE}/jobs/${jobId}/edl.json`)
+    if (!response.ok) {
+      setError('EDL not ready yet')
+      return
+    }
+    const text = await response.text()
+    setEdlText(text)
+  }
+
+  useEffect(() => {
+    if (!jobId) return
+    let active = true
+
+    const poll = async () => {
+      try {
+        const response = await fetch(`${API_BASE}/jobs/${jobId}`)
+        if (!response.ok) return
+        const data = (await response.json()) as JobStatus
+        if (!active) return
+        setJobStatus(data)
+        if (data.artifact_urls?.preview) {
+          setPreviewUrl(`${API_BASE}${data.artifact_urls.preview}`)
+        }
+        if (data.artifact_urls?.final) {
+          setFinalUrl(`${API_BASE}${data.artifact_urls.final}`)
+        }
+      } catch {
+        if (active) {
+          setError('Failed to fetch job status')
+        }
+      }
+    }
+
+    void poll()
+    const interval = window.setInterval(poll, 2000)
+    return () => {
+      active = false
+      window.clearInterval(interval)
+    }
+  }, [jobId])
+
+  return (
+    <div className="app">
+      <header className="hero">
+        <div>
+          <p className="badge">Code X • Local VHS Reel Editor</p>
+          <h1>
+            Turn night-out clips into a <span>15–30s VHS highlight reel</span> on
+            your laptop.
+          </h1>
+          <p className="subhead">
+            Drop in your clips, pick a vibe, and generate a synced vertical reel
+            with a VHS finish—no uploads.
+          </p>
+        </div>
+        <div className="hero-card">
+          <div className="hero-stat">
+            <span>Avg. loop</span>
+            <strong>2–8 min</strong>
+          </div>
+          <div className="hero-stat">
+            <span>Output</span>
+            <strong>720p / 1080p</strong>
+          </div>
+          <div className="hero-stat">
+            <span>Sync</span>
+            <strong>Beat-aligned</strong>
+          </div>
+        </div>
+      </header>
+
+      <section className="panel">
+        <div className="panel-header">
+          <h2>1. Drop your assets</h2>
+          <p>Up to 20 clips. MP4/MOV/WEBM + one MP3/M4A/WAV track.</p>
+        </div>
+        <div className="drop-grid">
+          <label
+            className="dropzone"
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={(event) => {
+              event.preventDefault()
+              handleClipFiles(event.dataTransfer.files)
+            }}
+          >
+            <input
+              type="file"
+              multiple
+              accept="video/mp4,video/quicktime,video/webm"
+              onChange={(event) => handleClipFiles(event.target.files)}
+            />
+            <div>
+              <h3>Video Clips</h3>
+              <p>Drag & drop or click to select</p>
+            </div>
+          </label>
+          <label
+            className="dropzone"
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={(event) => {
+              event.preventDefault()
+              handleSongFile(event.dataTransfer.files)
+            }}
+          >
+            <input
+              type="file"
+              accept="audio/mpeg,audio/mp4,audio/wav"
+              onChange={(event) => handleSongFile(event.target.files)}
+            />
+            <div>
+              <h3>Music Track</h3>
+              <p>{song ? song.name : 'Drop your song or click to select'}</p>
+            </div>
+          </label>
+        </div>
+        <div className="asset-list">
+          {clips.length === 0 ? (
+            <p className="muted">No clips yet.</p>
+          ) : (
+            clips.map((clip) => (
+              <div className="asset-item" key={clip.id}>
+                <div>
+                  <strong>{clip.file.name}</strong>
+                  <span>{formatSize(clip.file.size)}</span>
+                </div>
+                <button
+                  className={clip.locked ? 'chip active' : 'chip'}
+                  onClick={() =>
+                    setClips((current) =>
+                      current.map((item) =>
+                        item.id === clip.id
+                          ? { ...item, locked: !item.locked }
+                          : item,
+                      ),
+                    )
+                  }
+                >
+                  {clip.locked ? 'Locked' : 'Lock clip'}
+                </button>
+              </div>
+            ))
+          )}
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="panel-header">
+          <h2>2. Choose your settings</h2>
+          <p>Dial in vibe, length, and VHS intensity.</p>
+        </div>
+        <div className="settings-grid">
+          <div className="setting">
+            <label>Target length</label>
+            <div className="segmented">
+              {[15, 30].map((length) => (
+                <button
+                  key={length}
+                  className={length === targetLength ? 'active' : ''}
+                  onClick={() => setTargetLength(length)}
+                >
+                  {length}s
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="setting">
+            <label>Vibe preset</label>
+            <div className="segmented">
+              {(['hype', 'chill', 'chaotic'] as const).map((preset) => (
+                <button
+                  key={preset}
+                  className={preset === vibe ? 'active' : ''}
+                  onClick={() => setVibe(preset)}
+                >
+                  {preset}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="setting">
+            <label>VHS intensity</label>
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={vhsIntensity}
+              onChange={(event) => setVhsIntensity(Number(event.target.value))}
+            />
+            <span className="value">{vhsIntensity.toFixed(2)}</span>
+          </div>
+          <div className="setting">
+            <label>Glitch amount</label>
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={glitchAmount}
+              onChange={(event) => setGlitchAmount(Number(event.target.value))}
+            />
+            <span className="value">{glitchAmount.toFixed(2)}</span>
+          </div>
+          <div className="setting">
+            <label>Original clip audio</label>
+            <button
+              className={includeClipAudio ? 'toggle active' : 'toggle'}
+              onClick={() => setIncludeClipAudio((value) => !value)}
+            >
+              {includeClipAudio ? 'On' : 'Off'}
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="panel-header">
+          <h2>3. Generate</h2>
+          <p>Kick off the local render and monitor progress.</p>
+        </div>
+        <div className="generate-row">
+          <button className="primary" onClick={handleGenerate}>
+            Generate Reel
+          </button>
+          <button className="ghost" onClick={handleRegenerate}>
+            Regenerate
+          </button>
+          {error && <span className="error">{error}</span>}
+        </div>
+        <div className="progress">
+          <div>
+            <strong>Status</strong>
+            <span>{jobStatus?.status ?? 'Idle'}</span>
+          </div>
+          <div>
+            <strong>Step</strong>
+            <span>{jobStatus?.step ?? '-'}</span>
+          </div>
+          <div>
+            <strong>Progress</strong>
+            <span>
+              {jobStatus?.progress !== undefined
+                ? `${Math.round(jobStatus.progress * 100)}%`
+                : '0%'}
+            </span>
+          </div>
+          <div>
+            <strong>Message</strong>
+            <span>{jobStatus?.message ?? '-'}</span>
+          </div>
+        </div>
+        <div className="preview">
+          {previewUrl ? (
+            <video controls src={previewUrl} />
+          ) : (
+            <div className="preview-placeholder">Preview will appear here.</div>
+          )}
+          <div className="preview-actions">
+            <button className="ghost" onClick={handleShowEdl}>
+              Show Timeline JSON
+            </button>
+            {finalUrl && (
+              <a className="primary" href={finalUrl} download>
+                Download MP4
+              </a>
+            )}
+          </div>
+        </div>
+        {edlText && (
+          <pre className="edl">{edlText}</pre>
+        )}
+      </section>
+    </div>
+  )
+}
+
+export default App

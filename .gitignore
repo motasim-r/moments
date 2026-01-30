@@ -1,0 +1,13 @@
+node_modules
+apps/web/dist
+apps/web/.vite
+server/.venv
+server/__pycache__
+server/jobs
+server/**/*.pyc
+server/scripts/tmp-assets
+server/api.log
+apps/web/web.log
+.npm
+*.log
+.DS_Store
