@@ -6,12 +6,13 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
+import subprocess
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 from app.pipeline.runner import ClipInput, run_job
-from app.utils.paths import ensure_job_dirs, get_job_paths
+from app.utils.paths import ROOT_DIR, ensure_job_dirs, get_job_paths
 from app.utils.status import read_status, write_status
 
 ALLOWED_CLIP_EXTENSIONS = {".mp4", ".mov", ".webm"}
@@ -52,6 +53,44 @@ def _parse_settings(settings_raw: Optional[str]) -> dict[str, Any]:
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+def _git_info() -> dict[str, Any]:
+    try:
+        commit = subprocess.check_output(
+            ["git", "-C", str(ROOT_DIR), "rev-parse", "--short", "HEAD"],
+            text=True,
+        ).strip()
+        branch = subprocess.check_output(
+            ["git", "-C", str(ROOT_DIR), "rev-parse", "--abbrev-ref", "HEAD"],
+            text=True,
+        ).strip()
+        log_output = subprocess.check_output(
+            [
+                "git",
+                "-C",
+                str(ROOT_DIR),
+                "log",
+                "-n",
+                "5",
+                "--pretty=format:%h|%s|%cI",
+            ],
+            text=True,
+        ).strip()
+        recent = []
+        if log_output:
+            for line in log_output.splitlines():
+                parts = line.split("|", 2)
+                if len(parts) == 3:
+                    recent.append({"commit": parts[0], "message": parts[1], "date": parts[2]})
+        return {"commit": commit, "branch": branch, "recent": recent}
+    except subprocess.SubprocessError:
+        return {"commit": "unknown", "branch": "unknown", "recent": []}
+
+
+@app.get("/version")
+async def version() -> dict[str, Any]:
+    return {"version": "local-dev", "git": _git_info()}
 
 
 @app.post("/jobs")

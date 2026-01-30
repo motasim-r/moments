@@ -19,6 +19,15 @@ type JobStatus = {
   }
 }
 
+type VersionInfo = {
+  version: string
+  git?: {
+    commit: string
+    branch: string
+    recent?: { commit: string; message: string; date: string }[]
+  }
+}
+
 const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000'
 
 const allowedClipExt = ['mp4', 'mov', 'webm']
@@ -53,12 +62,14 @@ function App() {
   const [vhsIntensity, setVhsIntensity] = useState(0.7)
   const [glitchAmount, setGlitchAmount] = useState(0.2)
   const [includeClipAudio, setIncludeClipAudio] = useState(false)
+  const [ntscPreset, setNtscPreset] = useState<'custom' | 'semi-sharp' | 'game-tape'>('custom')
   const [jobId, setJobId] = useState<string | null>(null)
   const [jobStatus, setJobStatus] = useState<JobStatus | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [finalUrl, setFinalUrl] = useState<string | null>(null)
   const [edlText, setEdlText] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [versionInfo, setVersionInfo] = useState<VersionInfo | null>(null)
 
   const lockedClipNames = useMemo(
     () => clips.filter((clip) => clip.locked).map((clip) => clip.file.name),
@@ -119,6 +130,7 @@ function App() {
         glitch_amount: glitchAmount,
         include_clip_audio: includeClipAudio,
         locked_clips: lockedClipNames,
+        ntsc_preset: ntscPreset,
         seed: Math.floor(Math.random() * 1_000_000),
       }),
     )
@@ -152,6 +164,13 @@ function App() {
     const text = await response.text()
     setEdlText(text)
   }
+
+  useEffect(() => {
+    fetch(`${API_BASE}/version`)
+      .then((response) => response.json())
+      .then((data: VersionInfo) => setVersionInfo(data))
+      .catch(() => setVersionInfo(null))
+  }, [])
 
   useEffect(() => {
     if (!jobId) return
@@ -198,6 +217,12 @@ function App() {
             Drop in your clips, pick a vibe, and generate a synced vertical reel
             with a VHS finish—no uploads.
           </p>
+          {versionInfo?.git?.commit && (
+            <p className="version">
+              Version {versionInfo.version} • {versionInfo.git.commit} (
+              {versionInfo.git.branch})
+            </p>
+          )}
         </div>
         <div className="hero-card">
           <div className="hero-stat">
@@ -356,6 +381,19 @@ function App() {
               {includeClipAudio ? 'On' : 'Off'}
             </button>
           </div>
+          <div className="setting">
+            <label>VHS preset</label>
+            <select
+              value={ntscPreset}
+              onChange={(event) =>
+                setNtscPreset(event.target.value as 'custom' | 'semi-sharp' | 'game-tape')
+              }
+            >
+              <option value="custom">Custom (latest)</option>
+              <option value="semi-sharp">Semi-sharp</option>
+              <option value="game-tape">Game tape</option>
+            </select>
+          </div>
         </div>
       </section>
 
@@ -414,6 +452,27 @@ function App() {
         </div>
         {edlText && (
           <pre className="edl">{edlText}</pre>
+        )}
+      </section>
+
+      <section className="panel">
+        <div className="panel-header">
+          <h2>Change log</h2>
+          <p>Latest local commits so you know which build you are testing.</p>
+        </div>
+        {versionInfo?.git?.recent && versionInfo.git.recent.length > 0 ? (
+          <div className="changelog">
+            {versionInfo.git.recent.map((entry) => (
+              <div className="changelog-item" key={entry.commit}>
+                <strong>{entry.message}</strong>
+                <span>
+                  {entry.commit} • {new Date(entry.date).toLocaleString()}
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="muted">No changelog available.</p>
         )}
       </section>
     </div>
