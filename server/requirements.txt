@@ -5,3 +5,4 @@ pydantic==2.10.6
 Pillow==11.1.0
 torch==2.2.2
 transformers==4.48.2
+numpy==1.26.4
