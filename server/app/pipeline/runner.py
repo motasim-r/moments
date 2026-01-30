@@ -5,7 +5,7 @@ import random
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from app.ai.fastvlm import tag_frame
 from app.utils.ffmpeg import FFmpegError, ffprobe_duration, run_ffmpeg
@@ -238,8 +238,11 @@ def analyze_clips(
     paths: JobPaths,
     proxies: list[ProxyClip],
     settings: dict[str, Any],
+    status_callback: Optional[Callable[[dict[str, Any]], None]] = None,
 ) -> dict[str, list[dict[str, Any]]]:
     labels: dict[str, list[dict[str, Any]]] = {}
+    total_est = sum(max(1, int(proxy.duration)) for proxy in proxies) or 1
+    processed = 0
     for proxy in proxies:
         clip_dir = paths.frames_dir / proxy.clip_id
         frame_paths = _extract_frames(proxy, clip_dir)
@@ -252,6 +255,20 @@ def analyze_clips(
             label = tag_frame(frame_path)
             label["timestamp"] = float(max(0, index))
             clip_labels.append(label)
+            processed += 1
+            if status_callback and (processed % 2 == 0 or label.get("scene")):
+                progress = 0.35 + 0.15 * min(1.0, processed / total_est)
+                caption = label.get("scene") or "no caption"
+                status_callback(
+                    {
+                        "step": "analyze",
+                        "progress": round(progress, 3),
+                        "message": (
+                            f"Tagging {proxy.clip_id} @ {label['timestamp']:.1f}s "
+                            f"({processed}/{total_est}) • {caption}"
+                        ),
+                    }
+                )
         labels[proxy.clip_id] = clip_labels
 
     labels_path = paths.job_dir / "vlm_labels.json"
@@ -765,7 +782,17 @@ def run_job(job_id: str, clips: list[ClipInput], song_path: Path, settings: dict
 
         labels: Optional[dict[str, list[dict[str, Any]]]] = None
         try:
-            labels = analyze_clips(paths, proxies, settings)
+            def _status_update(update: dict[str, Any]) -> None:
+                _update_status(
+                    paths,
+                    {
+                        "job_id": job_id,
+                        "status": "running",
+                        **update,
+                    },
+                )
+
+            labels = analyze_clips(paths, proxies, settings, _status_update)
         except Exception as exc:
             _update_status(
                 paths,

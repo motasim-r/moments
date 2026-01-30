@@ -313,6 +313,10 @@
   color: var(--ink-soft);
 }
 
+.progress span {
+  word-break: break-word;
+}
+
 .preview {
   margin-top: 24px;
   display: flex;
