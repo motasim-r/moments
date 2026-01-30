@@ -5,8 +5,9 @@ import random
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
+from app.ai.fastvlm import tag_frame
 from app.utils.ffmpeg import FFmpegError, ffprobe_duration, run_ffmpeg
 from app.utils.ntsc import run_ntsc_cli
 from app.utils.paths import JobPaths, ROOT_DIR, ensure_job_dirs
@@ -215,12 +216,230 @@ def preprocess_clips(paths: JobPaths, clips: list[ClipInput]) -> list[ProxyClip]
     return proxies
 
 
-def build_edl(paths: JobPaths, proxies: list[ProxyClip], settings: dict[str, Any]) -> dict[str, Any]:
+def _extract_frames(proxy: ProxyClip, frames_dir: Path) -> list[Path]:
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    pattern = frames_dir / f"{proxy.clip_id}_%04d.jpg"
+    args = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(proxy.path),
+        "-vf",
+        "fps=1,scale=384:-1:flags=lanczos",
+        "-q:v",
+        "2",
+        str(pattern),
+    ]
+    run_ffmpeg(args)
+    return sorted(frames_dir.glob(f"{proxy.clip_id}_*.jpg"))
+
+
+def analyze_clips(
+    paths: JobPaths,
+    proxies: list[ProxyClip],
+    settings: dict[str, Any],
+) -> dict[str, list[dict[str, Any]]]:
+    labels: dict[str, list[dict[str, Any]]] = {}
+    for proxy in proxies:
+        clip_dir = paths.frames_dir / proxy.clip_id
+        frame_paths = _extract_frames(proxy, clip_dir)
+        clip_labels: list[dict[str, Any]] = []
+        for frame_path in frame_paths:
+            try:
+                index = int(frame_path.stem.split("_")[-1]) - 1
+            except ValueError:
+                index = len(clip_labels)
+            label = tag_frame(frame_path)
+            label["timestamp"] = float(max(0, index))
+            clip_labels.append(label)
+        labels[proxy.clip_id] = clip_labels
+
+    labels_path = paths.job_dir / "vlm_labels.json"
+    labels_path.write_text(json.dumps(labels, indent=2))
+    return labels
+
+
+def _candidate_params(vibe: str) -> tuple[float, float]:
+    vibe = (vibe or "").lower()
+    if vibe == "chill":
+        return (1.4, 0.7)
+    if vibe == "chaotic":
+        return (0.6, 0.4)
+    return (0.9, 0.5)
+
+
+def _aggregate_labels(
+    labels: list[dict[str, Any]],
+    start: float,
+    end: float,
+) -> dict[str, Any]:
+    segment = [label for label in labels if start <= label["timestamp"] < end]
+    if not segment and labels:
+        segment = [min(labels, key=lambda item: abs(item["timestamp"] - start))]
+    if not segment:
+        return {
+            "highlight": 4,
+            "energy": 4,
+            "people": 0,
+            "brightness": 0.5,
+            "shot_type": "other",
+        }
+
+    highlight = sum(item.get("highlight", 4) for item in segment) / len(segment)
+    energy = sum(item.get("energy", 4) for item in segment) / len(segment)
+    brightness = sum(item.get("brightness", 0.5) for item in segment) / len(segment)
+    people = max(item.get("people", 0) for item in segment)
+    shot_counts: dict[str, int] = {}
+    for item in segment:
+        shot = item.get("shot_type", "other")
+        shot_counts[shot] = shot_counts.get(shot, 0) + 1
+    shot_type = max(shot_counts, key=shot_counts.get) if shot_counts else "other"
+    return {
+        "highlight": highlight,
+        "energy": energy,
+        "people": people,
+        "brightness": brightness,
+        "shot_type": shot_type,
+    }
+
+
+def _score_candidate(features: dict[str, Any]) -> float:
+    highlight = float(features.get("highlight", 4.0)) / 10.0
+    energy = float(features.get("energy", 4.0)) / 10.0
+    brightness = float(features.get("brightness", 0.5))
+    people = float(features.get("people", 0.0))
+
+    quality = 1.0
+    if brightness < 0.2:
+        quality -= 0.25
+    if brightness < 0.1:
+        quality -= 0.2
+
+    people_bonus = 0.1 if people >= 2 else 0.0
+    score = 0.55 * highlight + 0.25 * energy + 0.2 * quality + people_bonus
+    return max(0.0, min(1.0, score))
+
+
+def _overlaps(existing: list[dict[str, Any]], start: float, end: float) -> bool:
+    for item in existing:
+        if start < item["out"] - 0.05 and end > item["in"] + 0.05:
+            return True
+    return False
+
+
+def _build_vlm_timeline(
+    proxies: list[ProxyClip],
+    labels: dict[str, list[dict[str, Any]]],
+    settings: dict[str, Any],
+    rng: random.Random,
+) -> list[dict[str, Any]]:
     target_length = float(settings.get("target_length_s", 15))
     vibe = settings.get("vibe", "hype")
-    seed = _resolve_seed(settings)
-    rng = random.Random(seed)
+    seg_len, stride = _candidate_params(vibe)
 
+    candidates: list[dict[str, Any]] = []
+    for proxy in proxies:
+        clip_labels = labels.get(proxy.clip_id, [])
+        start = 0.0
+        while start + seg_len <= proxy.duration + 0.01:
+            end = min(proxy.duration, start + seg_len)
+            features = _aggregate_labels(clip_labels, start, end)
+            score = _score_candidate(features)
+            candidates.append(
+                {
+                    "clip_id": proxy.clip_id,
+                    "in": round(start, 3),
+                    "out": round(end, 3),
+                    "score": score,
+                    "shot_type": features.get("shot_type", "other"),
+                    "people": features.get("people", 0),
+                }
+            )
+            start += stride
+
+    candidates.sort(key=lambda item: item["score"], reverse=True)
+    if not candidates:
+        return []
+
+    max_per_clip = target_length * 0.25
+    selected: list[dict[str, Any]] = []
+    clip_usage: dict[str, float] = {}
+    clip_segments: dict[str, list[dict[str, Any]]] = {}
+
+    hook_pool = candidates[: max(1, len(candidates) // 10)]
+    hook = next((item for item in hook_pool if item.get("people", 0) >= 1), hook_pool[0])
+    selected.append(hook)
+    clip_usage[hook["clip_id"]] = hook["out"] - hook["in"]
+    clip_segments[hook["clip_id"]] = [hook]
+
+    shot_history = [hook.get("shot_type", "other")]
+    total = clip_usage[hook["clip_id"]]
+
+    for candidate in candidates:
+        if total >= target_length - 0.05:
+            break
+        if candidate is hook:
+            continue
+        clip_id = candidate["clip_id"]
+        seg_len_candidate = candidate["out"] - candidate["in"]
+        remaining = target_length - total
+        if remaining < 0.5:
+            break
+        if seg_len_candidate > remaining:
+            candidate = {**candidate, "out": round(candidate["in"] + remaining, 3)}
+            seg_len_candidate = candidate["out"] - candidate["in"]
+
+        if clip_usage.get(clip_id, 0.0) + seg_len_candidate > max_per_clip:
+            continue
+        if _overlaps(clip_segments.get(clip_id, []), candidate["in"], candidate["out"]):
+            continue
+        if len(shot_history) >= 2 and shot_history[-1] == shot_history[-2] == candidate.get(
+            "shot_type"
+        ):
+            continue
+
+        selected.append(candidate)
+        clip_usage[clip_id] = clip_usage.get(clip_id, 0.0) + seg_len_candidate
+        clip_segments.setdefault(clip_id, []).append(candidate)
+        shot_history.append(candidate.get("shot_type", "other"))
+        total += seg_len_candidate
+
+    if total < target_length - 0.25:
+        for candidate in candidates:
+            if total >= target_length - 0.05:
+                break
+            if candidate in selected:
+                continue
+            clip_id = candidate["clip_id"]
+            if _overlaps(clip_segments.get(clip_id, []), candidate["in"], candidate["out"]):
+                continue
+            remaining = target_length - total
+            seg_len_candidate = candidate["out"] - candidate["in"]
+            if remaining < 0.5:
+                break
+            if seg_len_candidate > remaining:
+                candidate = {**candidate, "out": round(candidate["in"] + remaining, 3)}
+                seg_len_candidate = candidate["out"] - candidate["in"]
+            selected.append(candidate)
+            clip_usage[clip_id] = clip_usage.get(clip_id, 0.0) + seg_len_candidate
+            clip_segments.setdefault(clip_id, []).append(candidate)
+            total += seg_len_candidate
+
+    if len(selected) > 1:
+        rest = selected[1:]
+        rng.shuffle(rest)
+        selected = [selected[0], *rest]
+
+    return selected
+
+
+def _build_random_timeline(
+    proxies: list[ProxyClip],
+    settings: dict[str, Any],
+    rng: random.Random,
+) -> list[dict[str, Any]]:
+    target_length = float(settings.get("target_length_s", 15))
+    vibe = settings.get("vibe", "hype")
     base = _vibe_segment_base(vibe)
     timeline: list[dict[str, Any]] = []
     remaining = target_length
@@ -255,6 +474,25 @@ def build_edl(paths: JobPaths, proxies: list[ProxyClip], settings: dict[str, Any
         )
         remaining -= seg_len
         clip_index += 1
+    return timeline
+
+
+def build_edl(
+    paths: JobPaths,
+    proxies: list[ProxyClip],
+    settings: dict[str, Any],
+    labels: Optional[dict[str, list[dict[str, Any]]]] = None,
+) -> dict[str, Any]:
+    target_length = float(settings.get("target_length_s", 15))
+    vibe = settings.get("vibe", "hype")
+    seed = _resolve_seed(settings)
+    rng = random.Random(seed)
+
+    timeline: list[dict[str, Any]] = []
+    if labels:
+        timeline = _build_vlm_timeline(proxies, labels, settings, rng)
+    if not timeline:
+        timeline = _build_random_timeline(proxies, settings, rng)
 
     edl = {
         "version": "0.1",
@@ -519,13 +757,40 @@ def run_job(job_id: str, clips: list[ClipInput], song_path: Path, settings: dict
             {
                 "job_id": job_id,
                 "status": "running",
+                "step": "analyze",
+                "progress": 0.35,
+                "message": "Tagging frames (FastVLM)",
+            },
+        )
+
+        labels: Optional[dict[str, list[dict[str, Any]]]] = None
+        try:
+            labels = analyze_clips(paths, proxies, settings)
+        except Exception as exc:
+            _update_status(
+                paths,
+                {
+                    "job_id": job_id,
+                    "status": "running",
+                    "step": "analyze",
+                    "progress": 0.4,
+                    "message": f"Tagging failed, falling back: {exc}",
+                },
+            )
+            labels = None
+
+        _update_status(
+            paths,
+            {
+                "job_id": job_id,
+                "status": "running",
                 "step": "edl",
-                "progress": 0.45,
+                "progress": 0.5,
                 "message": "Building edit decision list",
             },
         )
 
-        edl = build_edl(paths, proxies, settings)
+        edl = build_edl(paths, proxies, settings, labels)
 
         _update_status(
             paths,

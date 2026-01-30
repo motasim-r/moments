@@ -49,3 +49,7 @@ VITE_API_BASE=http://localhost:8000 npm run dev
 ## Notes
 - Rendering is a minimal Phase 0/1 pipeline: proxies + naive segmenting + VHS filter + music track.
 - Outputs are stored in `server/jobs/{job_id}/output`.
+
+## FastVLM tagging (AI-assisted selection)
+The pipeline now samples 1 fps frames and runs a lightweight image-to-text model to score highlights.
+If you want a different model, set `FASTVLM_MODEL` before starting the API.
