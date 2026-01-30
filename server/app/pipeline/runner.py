@@ -8,7 +8,8 @@ from pathlib import Path
 from typing import Any
 
 from app.utils.ffmpeg import FFmpegError, ffprobe_duration, run_ffmpeg
-from app.utils.paths import JobPaths, ensure_job_dirs
+from app.utils.ntsc import run_ntsc_cli
+from app.utils.paths import JobPaths, ROOT_DIR, ensure_job_dirs
 from app.utils.status import write_status
 
 
@@ -32,11 +33,18 @@ DEFAULT_SETTINGS = {
     "vhs_intensity": 0.7,
     "glitch_amount": 0.2,
     "grain_amount": 0.5,
+    "vhs_engine": "ntsc-rs",
+    "ntsc_preset": "auto",
     "resolution": "1080x1920",
     "fps": 30,
     "seed": None,
     "include_clip_audio": False,
     "locked_clips": [],
+}
+
+NTSC_PRESETS = {
+    "semi-sharp": ROOT_DIR / "presets" / "ntsc" / "ntsc_semi_sharp.json",
+    "game-tape": ROOT_DIR / "presets" / "ntsc" / "ntsc_game_tape.json",
 }
 
 
@@ -62,6 +70,20 @@ def _vibe_segment_base(vibe: str) -> float:
 
 def _clamp(value: float, min_value: float, max_value: float) -> float:
     return max(min_value, min(max_value, value))
+
+
+def _resolve_ntsc_preset(settings: dict[str, Any]) -> Path:
+    preset_name = settings.get("ntsc_preset", "auto")
+    if isinstance(preset_name, str):
+        preset_path = NTSC_PRESETS.get(preset_name)
+        if preset_path and preset_path.exists():
+            return preset_path
+
+    intensity = float(settings.get("vhs_intensity", 0.7))
+    preset_path = NTSC_PRESETS["semi-sharp"] if intensity < 0.45 else NTSC_PRESETS["game-tape"]
+    if not preset_path.exists():
+        raise RuntimeError(f"Missing ntsc-rs preset file: {preset_path}")
+    return preset_path
 
 
 def preprocess_clips(paths: JobPaths, clips: list[ClipInput]) -> list[ProxyClip]:
@@ -169,6 +191,19 @@ def _vhs_filter(intensity: float) -> str:
     )
 
 
+def _resolve_resolution(settings: dict[str, Any]) -> tuple[int, int]:
+    raw = settings.get("resolution", "1080x1920")
+    if isinstance(raw, str) and "x" in raw:
+        width_str, height_str = raw.lower().split("x", 1)
+        try:
+            width = int(width_str)
+            height = int(height_str)
+            return width, height
+        except ValueError:
+            pass
+    return (1080, 1920)
+
+
 def render_reel(
     paths: JobPaths,
     proxies: list[ProxyClip],
@@ -179,6 +214,10 @@ def render_reel(
     timeline = edl["timeline"]
     if not timeline:
         raise RuntimeError("Empty timeline")
+
+    width, height = _resolve_resolution(settings)
+    fps = int(settings.get("fps", 30))
+    target_length = float(edl["settings"]["target_length_s"])
 
     inputs: list[str] = []
     for segment in timeline:
@@ -199,16 +238,10 @@ def render_reel(
         )
 
     concat_inputs = "".join(f"[v{idx}]" for idx in range(len(timeline)))
+    filter_parts.append(f"{concat_inputs}concat=n={len(timeline)}:v=1:a=0[vcat]")
     filter_parts.append(
-        f"{concat_inputs}concat=n={len(timeline)}:v=1:a=0[vcat]"
+        f"[vcat]fps={fps},scale={width}:{height}:flags=lanczos,format=yuv420p[vbase]"
     )
-
-    vhs = _vhs_filter(settings.get("vhs_intensity", 0.7))
-    filter_parts.append(
-        f"[vcat]fps=30,scale=1080:1920:flags=lanczos,{vhs},format=yuv420p[vout]"
-    )
-
-    target_length = float(edl["settings"]["target_length_s"])
     audio_index = len(timeline)
     filter_parts.append(
         f"[{audio_index}:a]atrim=0:{target_length},asetpts=PTS-STARTPTS[aout]"
@@ -216,15 +249,15 @@ def render_reel(
 
     filter_complex = ";".join(filter_parts)
 
-    final_path = paths.output_dir / "final.mp4"
-    args = [
+    base_path = paths.output_dir / "base.mp4"
+    args_base = [
         "ffmpeg",
         "-y",
         *inputs,
         "-filter_complex",
         filter_complex,
         "-map",
-        "[vout]",
+        "[vbase]",
         "-map",
         "[aout]",
         "-c:v",
@@ -240,9 +273,93 @@ def render_reel(
         "-movflags",
         "+faststart",
         "-shortest",
-        str(final_path),
+        str(base_path),
     ]
-    run_ffmpeg(args)
+    run_ffmpeg(args_base)
+
+    final_path = paths.output_dir / "final.mp4"
+    vhs_engine = str(settings.get("vhs_engine", "ntsc-rs")).lower()
+
+    if vhs_engine == "ntsc-rs":
+        preset_path = _resolve_ntsc_preset(settings)
+        ntsc_path = paths.output_dir / "ntsc.mp4"
+        run_ntsc_cli(base_path, ntsc_path, preset_path)
+        try:
+            run_ffmpeg(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-i",
+                    str(ntsc_path),
+                    "-i",
+                    str(base_path),
+                    "-map",
+                    "0:v:0",
+                    "-map",
+                    "1:a:0",
+                    "-c:v",
+                    "copy",
+                    "-c:a",
+                    "copy",
+                    "-movflags",
+                    "+faststart",
+                    "-shortest",
+                    str(final_path),
+                ]
+            )
+        except FFmpegError:
+            run_ffmpeg(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-i",
+                    str(ntsc_path),
+                    "-i",
+                    str(base_path),
+                    "-map",
+                    "0:v:0",
+                    "-map",
+                    "1:a:0",
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "veryfast",
+                    "-crf",
+                    "20",
+                    "-c:a",
+                    "aac",
+                    "-b:a",
+                    "192k",
+                    "-movflags",
+                    "+faststart",
+                    "-shortest",
+                    str(final_path),
+                ]
+            )
+    else:
+        vhs = _vhs_filter(settings.get("vhs_intensity", 0.7))
+        run_ffmpeg(
+            [
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(base_path),
+                "-vf",
+                f"{vhs},format=yuv420p",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "veryfast",
+                "-crf",
+                "20",
+                "-c:a",
+                "copy",
+                "-movflags",
+                "+faststart",
+                "-shortest",
+                str(final_path),
+            ]
+        )
 
     preview_path = paths.output_dir / "preview.mp4"
     args_preview = [

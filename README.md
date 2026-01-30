@@ -21,6 +21,19 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8000
 ```
 
+### VHS look (ntsc-rs)
+This build uses `ntsc-rs` for the VHS pass. Install the app and ensure the CLI is reachable:
+
+```bash
+# Option A: add to PATH (macOS)
+ln -s /Applications/ntsc-rs.app/Contents/MacOS/ntsc-rs-cli /usr/local/bin/ntsc-rs-cli
+
+# Option B: set an explicit path
+export NTSC_RS_CLI_PATH=/Applications/ntsc-rs.app/Contents/MacOS/ntsc-rs-cli
+```
+
+Presets live in `server/presets/ntsc`. The pipeline picks a preset automatically based on the VHS intensity slider.
+
 ### 3) Start the UI
 ```bash
 cd apps/web
