@@ -34,7 +34,7 @@ DEFAULT_SETTINGS = {
     "glitch_amount": 0.2,
     "grain_amount": 0.5,
     "vhs_engine": "ntsc-rs",
-    "ntsc_preset": "auto",
+    "ntsc_preset": "custom",
     "resolution": "1080x1920",
     "fps": 30,
     "seed": None,
@@ -43,6 +43,7 @@ DEFAULT_SETTINGS = {
 }
 
 NTSC_PRESETS = {
+    "custom": ROOT_DIR / "presets" / "ntsc" / "ntsc_custom.json",
     "semi-sharp": ROOT_DIR / "presets" / "ntsc" / "ntsc_semi_sharp.json",
     "game-tape": ROOT_DIR / "presets" / "ntsc" / "ntsc_game_tape.json",
 }
@@ -73,7 +74,7 @@ def _clamp(value: float, min_value: float, max_value: float) -> float:
 
 
 def _resolve_ntsc_preset(settings: dict[str, Any]) -> Path:
-    preset_name = settings.get("ntsc_preset", "auto")
+    preset_name = settings.get("ntsc_preset", "custom")
     if isinstance(preset_name, str):
         preset_path = NTSC_PRESETS.get(preset_name)
         if preset_path and preset_path.exists():
