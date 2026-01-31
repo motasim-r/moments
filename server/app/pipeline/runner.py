@@ -207,7 +207,7 @@ def preprocess_clips(
             "-vf",
             (
                 "scale="
-                f"{target_width}:{target_height}:force_original_aspect_ratio=cover,"
+                f"{target_width}:{target_height}:force_original_aspect_ratio=increase,"
                 f"crop={target_width}:{target_height},setsar=1"
             ),
             "-r",
@@ -689,7 +689,7 @@ def render_reel(
     concat_inputs = "".join(f"[v{idx}]" for idx in range(len(timeline)))
     filter_parts.append(f"{concat_inputs}concat=n={len(timeline)}:v=1:a=0[vcat]")
     filter_parts.append(
-        f"[vcat]fps={fps},scale={width}:{height}:force_original_aspect_ratio=cover:flags=lanczos,crop={width}:{height},format=yuv420p[vbase]"
+        f"[vcat]fps={fps},scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos,crop={width}:{height},format=yuv420p[vbase]"
     )
     audio_index = len(timeline)
     filter_parts.append(
