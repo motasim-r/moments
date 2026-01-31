@@ -66,7 +66,7 @@ function App() {
     '1080x1920',
   )
   const [ntscPreset, setNtscPreset] = useState<
-    'custom' | 'semi-sharp' | 'game-tape' | 'dynamic'
+    'custom' | 'noisy' | 'semi-sharp' | 'game-tape' | 'dynamic'
   >('custom')
   const [jobId, setJobId] = useState<string | null>(null)
   const [jobStatus, setJobStatus] = useState<JobStatus | null>(null)
@@ -406,11 +406,17 @@ function App() {
               value={ntscPreset}
               onChange={(event) =>
                 setNtscPreset(
-                  event.target.value as 'custom' | 'semi-sharp' | 'game-tape' | 'dynamic',
+                  event.target.value as
+                    | 'custom'
+                    | 'noisy'
+                    | 'semi-sharp'
+                    | 'game-tape'
+                    | 'dynamic',
                 )
               }
             >
               <option value="custom">Custom (latest)</option>
+              <option value="noisy">Noisy tape</option>
               <option value="semi-sharp">Semi-sharp</option>
               <option value="game-tape">Game tape</option>
               <option value="dynamic">Dynamic mix</option>

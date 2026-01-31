@@ -49,6 +49,7 @@ DEFAULT_SETTINGS = {
 
 NTSC_PRESETS = {
     "custom": ROOT_DIR / "presets" / "ntsc" / "ntsc_custom.json",
+    "noisy": ROOT_DIR / "presets" / "ntsc" / "ntsc_noisy.json",
     "semi-sharp": ROOT_DIR / "presets" / "ntsc" / "ntsc_semi_sharp.json",
     "game-tape": ROOT_DIR / "presets" / "ntsc" / "ntsc_game_tape.json",
 }
@@ -124,6 +125,7 @@ def _render_dynamic_ntsc(
 
     preset_paths = [
         NTSC_PRESETS["custom"],
+        NTSC_PRESETS["noisy"],
         NTSC_PRESETS["semi-sharp"],
         NTSC_PRESETS["game-tape"],
     ]
