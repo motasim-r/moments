@@ -724,15 +724,7 @@ def _render_overlay_frames(
         draw_glitch_text(draw, "PLAY >", x_left, y_top + line_gap, font_main)
         draw_glitch_text(draw, timecode, x_left, y_top + line_gap * 2, font_small_obj)
 
-        draw_glitch_text(draw, "VCR TAPE", x_left, y_top, font_main, align_right=True)
-        draw_glitch_text(
-            draw,
-            "IPHONE",
-            x_left,
-            y_top + line_gap,
-            font_small_obj,
-            align_right=True,
-        )
+        draw_glitch_text(draw, "LIVEINTHEMOMENT", x_left, y_top, font_main, align_right=True)
 
         y_bottom = height - line_gap * 3
         draw_glitch_text(draw, now_time.strftime("%H:%M"), x_left, y_bottom, font_main)
@@ -792,8 +784,7 @@ def _vhs_overlay_filter(width: int, height: int) -> str:
     overlays += _drawtext_glitch("PLAY >", x_left, f"{y_top}+{line_gap}", font_size)
     overlays += _drawtext_glitch("%{pts\\:hms}", x_left, f"{y_top}+{line_gap * 2}", font_small)
 
-    overlays += _drawtext_glitch("VCR TAPE", "w-tw-24", y_top, font_size, align_right=True)
-    overlays += _drawtext_glitch("IPHONE", "w-tw-24", f"{y_top}+{line_gap}", font_small, align_right=True)
+    overlays += _drawtext_glitch("LIVEINTHEMOMENT", "w-tw-24", y_top, font_size, align_right=True)
 
     y_bottom = f"h-{line_gap * 3}"
     overlays += _drawtext_glitch("%{localtime\\:%H\\:%M}", x_left, y_bottom, font_size)
