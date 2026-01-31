@@ -13,6 +13,8 @@
 #import "QCAIChatOpusDecoder.h"
 #import "QCScanViewController.h"
 #import "QCCentralManager.h"
+#import <AVKit/AVKit.h>
+#import <Photos/Photos.h>
 
 typedef NS_ENUM(NSInteger, QGDeviceActionType) {
     /// Get hardware version, firmware version, and WiFi firmware versions
@@ -47,6 +49,9 @@ typedef NS_ENUM(NSInteger, QGDeviceActionType) {
 
     /// Configure local server URL
     QGDeviceActionTypeServerURL,
+
+    /// View downloaded media
+    QGDeviceActionTypeDownloadedMedia,
     
     /// Convert Opus to pcm
     QGDeviceActionTypeOpusToPcm,
@@ -88,6 +93,208 @@ typedef NS_ENUM(NSInteger, QGDeviceActionType) {
     QGDeviceActionTypeAIVoiceChat,
 };
 
+
+
+@interface MediaListViewController : UITableViewController
+@property(nonatomic,copy)NSString *directoryPath;
+@property(nonatomic,strong)NSArray<NSString *> *files;
+- (instancetype)initWithDirectory:(NSString *)directoryPath;
+@end
+
+@implementation MediaListViewController
+
+- (instancetype)initWithDirectory:(NSString *)directoryPath {
+    self = [super initWithStyle:UITableViewStylePlain];
+    if (self) {
+        _directoryPath = [directoryPath copy];
+        _files = @[];
+    }
+    return self;
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"Downloaded Media";
+    self.tableView.rowHeight = 64;
+}
+
+- (NSArray<NSString *> *)scanMediaPaths {
+    if (self.directoryPath.length == 0) {
+        return @[];
+    }
+    NSFileManager *fileManager = [NSFileManager defaultManager];
+    NSArray<NSString *> *items = [fileManager contentsOfDirectoryAtPath:self.directoryPath error:nil];
+    if (!items) {
+        return @[];
+    }
+    NSSet<NSString *> *extensions = [NSSet setWithArray:@[@"mp4", @"mov", @"webm", @"m4v", @"jpg", @"jpeg", @"png", @"heic"]];
+    NSMutableArray<NSString *> *paths = [NSMutableArray array];
+    for (NSString *name in items) {
+        NSString *ext = [[name pathExtension] lowercaseString];
+        if (![extensions containsObject:ext]) {
+            continue;
+        }
+        [paths addObject:[self.directoryPath stringByAppendingPathComponent:name]];
+    }
+    [paths sortUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
+        NSDictionary *attrA = [fileManager attributesOfItemAtPath:a error:nil];
+        NSDictionary *attrB = [fileManager attributesOfItemAtPath:b error:nil];
+        NSDate *dateA = attrA[NSFileModificationDate];
+        NSDate *dateB = attrB[NSFileModificationDate];
+        return [dateB compare:dateA];
+    }];
+    return paths;
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    self.files = [self scanMediaPaths];
+    [self.tableView reloadData];
+}
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    return self.files.count;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"MediaCell"];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"MediaCell"];
+    } else if (cell.detailTextLabel == nil) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"MediaCell"];
+    }
+    NSString *path = self.files[indexPath.row];
+    NSString *name = [path lastPathComponent];
+    NSFileManager *fileManager = [NSFileManager defaultManager];
+    NSDictionary *attr = [fileManager attributesOfItemAtPath:path error:nil];
+    NSNumber *size = attr[NSFileSize];
+    NSDate *date = attr[NSFileModificationDate];
+    NSString *detail = @"";
+    if (size && date) {
+        double mb = [size doubleValue] / (1024.0 * 1024.0);
+        NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+        formatter.dateStyle = NSDateFormatterShortStyle;
+        formatter.timeStyle = NSDateFormatterShortStyle;
+        detail = [NSString stringWithFormat:@"%.1f MB • %@", mb, [formatter stringFromDate:date]];
+    }
+    cell.textLabel.text = name;
+    cell.detailTextLabel.text = detail;
+    cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
+    cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    return cell;
+}
+
+- (BOOL)isVideoPath:(NSString *)path {
+    NSString *ext = [[path pathExtension] lowercaseString];
+    return [@[@"mp4", @"mov", @"m4v", @"webm"] containsObject:ext];
+}
+
+- (BOOL)isImagePath:(NSString *)path {
+    NSString *ext = [[path pathExtension] lowercaseString];
+    return [@[@"jpg", @"jpeg", @"png", @"heic"] containsObject:ext];
+}
+
+- (void)playMediaAtPath:(NSString *)path {
+    if (![self isVideoPath:path]) {
+        if ([self isImagePath:path]) {
+            UIImage *image = [UIImage imageWithContentsOfFile:path];
+            if (!image) {
+                [self showAlertWithTitle:@"Failed" message:@"Unable to load image."];
+                return;
+            }
+            UIViewController *viewer = [[UIViewController alloc] init];
+            viewer.view.backgroundColor = [UIColor blackColor];
+            UIImageView *imageView = [[UIImageView alloc] initWithImage:image];
+            imageView.contentMode = UIViewContentModeScaleAspectFit;
+            imageView.frame = viewer.view.bounds;
+            imageView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+            [viewer.view addSubview:imageView];
+            [self presentViewController:viewer animated:YES completion:nil];
+            return;
+        }
+        [self showAlertWithTitle:@"Unsupported" message:@"This file can't be previewed."];
+        return;
+    }
+    AVPlayerViewController *playerVC = [[AVPlayerViewController alloc] init];
+    playerVC.player = [AVPlayer playerWithURL:[NSURL fileURLWithPath:path]];
+    [self presentViewController:playerVC animated:YES completion:^{
+        [playerVC.player play];
+    }];
+}
+
+- (void)saveMediaAtPath:(NSString *)path {
+    if (![self isVideoPath:path] && ![self isImagePath:path]) {
+        [self showAlertWithTitle:@"Unsupported" message:@"This file can't be saved to Photos."];
+        return;
+    }
+
+    void (^saveBlock)(void) = ^{
+        [[PHPhotoLibrary sharedPhotoLibrary] performChanges:^{
+            NSURL *url = [NSURL fileURLWithPath:path];
+            if ([self isVideoPath:path]) {
+                [PHAssetChangeRequest creationRequestForAssetFromVideoAtFileURL:url];
+            } else {
+                [PHAssetChangeRequest creationRequestForAssetFromImageAtFileURL:url];
+            }
+        } completionHandler:^(BOOL success, NSError * _Nullable error) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (success) {
+                    [self showAlertWithTitle:@"Saved" message:@"Saved to Photos."];
+                } else {
+                    [self showAlertWithTitle:@"Failed" message:error.localizedDescription ?: @"Save failed."];
+                }
+            });
+        }];
+    };
+
+    if (@available(iOS 14, *)) {
+        [PHPhotoLibrary requestAuthorizationForAccessLevel:PHAccessLevelAddOnly handler:^(PHAuthorizationStatus status) {
+            if (status == PHAuthorizationStatusAuthorized || status == PHAuthorizationStatusLimited) {
+                saveBlock();
+            } else {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [self showAlertWithTitle:@"Photos Access" message:@"Enable Photos access in Settings to save."];
+                });
+            }
+        }];
+    } else {
+        [PHPhotoLibrary requestAuthorization:^(PHAuthorizationStatus status) {
+            if (status == PHAuthorizationStatusAuthorized) {
+                saveBlock();
+            } else {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [self showAlertWithTitle:@"Photos Access" message:@"Enable Photos access in Settings to save."];
+                });
+            }
+        }];
+    }
+}
+
+- (void)showAlertWithTitle:(NSString *)title message:(NSString *)message {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
+                                                                   message:message
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    NSString *path = self.files[indexPath.row];
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:[path lastPathComponent]
+                                                                   message:nil
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Play" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        [self playMediaAtPath:path];
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Save to Photos" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        [self saveMediaAtPath:path];
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
+@end
 
 
 @interface ViewController ()<UITableViewDelegate, UITableViewDataSource,QCCentralManagerDelegate,QCSDKManagerDelegate>
@@ -132,6 +339,7 @@ typedef NS_ENUM(NSInteger, QGDeviceActionType) {
 @property(nonatomic,copy)NSString *syncStatus;
 @property(nonatomic,copy)NSString *wifiSSID;
 @property(nonatomic,copy)NSString *wifiPassword;
+@property(nonatomic,strong)NSArray<NSString *> *downloadedFiles;
 @end
 
 @implementation ViewController
@@ -166,6 +374,40 @@ static NSString *const kDefaultServerURL = @"http://MOs-MacBook-Pro.local:8000";
     NSString *savedURL = [[NSUserDefaults standardUserDefaults] stringForKey:kBridgeServerURLKey];
     self.serverURL = savedURL.length > 0 ? savedURL : kDefaultServerURL;
     self.syncStatus = @"Idle";
+    self.downloadedFiles = [self scanDownloadedMediaPaths];
+}
+
+- (NSArray<NSString *> *)scanDownloadedMediaPaths {
+    NSString *docDir = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+    if (docDir.length == 0) {
+        return @[];
+    }
+    NSFileManager *fileManager = [NSFileManager defaultManager];
+    NSArray<NSString *> *items = [fileManager contentsOfDirectoryAtPath:docDir error:nil];
+    if (!items) {
+        return @[];
+    }
+    NSSet<NSString *> *extensions = [NSSet setWithArray:@[@"mp4", @"mov", @"webm", @"m4v", @"jpg", @"jpeg", @"png", @"heic"]];
+    NSMutableArray<NSString *> *paths = [NSMutableArray array];
+    for (NSString *name in items) {
+        NSString *ext = [[name pathExtension] lowercaseString];
+        if (![extensions containsObject:ext]) {
+            continue;
+        }
+        [paths addObject:[docDir stringByAppendingPathComponent:name]];
+    }
+    [paths sortUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
+        NSDictionary *attrA = [fileManager attributesOfItemAtPath:a error:nil];
+        NSDictionary *attrB = [fileManager attributesOfItemAtPath:b error:nil];
+        NSDate *dateA = attrA[NSFileModificationDate];
+        NSDate *dateB = attrB[NSFileModificationDate];
+        return [dateB compare:dateA];
+    }];
+    return paths;
+}
+
+- (void)refreshDownloadedMedia {
+    self.downloadedFiles = [self scanDownloadedMediaPaths];
 }
 
 #pragma mark - Device Data Report
@@ -387,6 +629,7 @@ static NSString *const kDefaultServerURL = @"http://MOs-MacBook-Pro.local:8000";
                 return;
             }
             NSLog(@"download success(%zd) at :%@",index+1,filePath);
+            [self refreshDownloadedMedia];
             if (index == count - 1) {
                 NSLog(@"download finished");
                 self.downloadMediaResourcesInfo = @"Download Finished";
@@ -528,6 +771,7 @@ static NSString *const kDefaultServerURL = @"http://MOs-MacBook-Pro.local:8000";
         }
 
         totalCount = count;
+        [self refreshDownloadedMedia];
         [self uploadFileAtPath:filePath completion:^(BOOL success, NSString *detail) {
             uploadedCount += 1;
             dispatch_async(dispatch_get_main_queue(), ^{
@@ -746,6 +990,8 @@ static NSString *const kDefaultServerURL = @"http://MOs-MacBook-Pro.local:8000";
     
     [QCCentralManager shared].delegate = self;
     [self didState:[QCCentralManager shared].deviceState];
+    [self refreshDownloadedMedia];
+    [self.tableView reloadData];
 }
 
 - (void)rightAction {
@@ -881,6 +1127,10 @@ static NSString *const kDefaultServerURL = @"http://MOs-MacBook-Pro.local:8000";
             cell.textLabel.text = @"Local server URL";
             cell.detailTextLabel.text = self.serverURL;
             break;
+        case QGDeviceActionTypeDownloadedMedia:
+            cell.textLabel.text = @"Downloaded media";
+            cell.detailTextLabel.text = [NSString stringWithFormat:@"%lu files", (unsigned long)self.downloadedFiles.count];
+            break;
         case QGDeviceActionTypeOpusToPcm:
             cell.textLabel.text = @"convert opus to pcm";
             break;
@@ -976,6 +1226,12 @@ static NSString *const kDefaultServerURL = @"http://MOs-MacBook-Pro.local:8000";
         case QGDeviceActionTypeServerURL:
             [self editServerURL];
             break;
+        case QGDeviceActionTypeDownloadedMedia: {
+            NSString *docDir = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+            MediaListViewController *mediaVC = [[MediaListViewController alloc] initWithDirectory:docDir];
+            [self.navigationController pushViewController:mediaVC animated:YES];
+            break;
+        }
         case QGDeviceActionTypeOpusToPcm:
             [self convertOpusToPcm];
             break;

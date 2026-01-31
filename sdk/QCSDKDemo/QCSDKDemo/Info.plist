@@ -25,6 +25,10 @@
 	<string>Bluetooth is required to connect to the glasses.</string>
 	<key>NSBluetoothPeripheralUsageDescription</key>
 	<string>Bluetooth is required to connect to the glasses.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Save downloaded glasses media to Photos.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>View and save downloaded glasses media.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_http._tcp</string>
