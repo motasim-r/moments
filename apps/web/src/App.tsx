@@ -62,6 +62,9 @@ function App() {
   const [vhsIntensity, setVhsIntensity] = useState(0.7)
   const [glitchAmount, setGlitchAmount] = useState(0.2)
   const [includeClipAudio, setIncludeClipAudio] = useState(false)
+  const [resolution, setResolution] = useState<'1080x1920' | '1280x960' | '1360x1824'>(
+    '1080x1920',
+  )
   const [ntscPreset, setNtscPreset] = useState<
     'custom' | 'semi-sharp' | 'game-tape' | 'dynamic'
   >('custom')
@@ -133,6 +136,7 @@ function App() {
         include_clip_audio: includeClipAudio,
         locked_clips: lockedClipNames,
         ntsc_preset: ntscPreset,
+        resolution,
         seed: Math.floor(Math.random() * 1_000_000),
       }),
     )
@@ -382,6 +386,19 @@ function App() {
             >
               {includeClipAudio ? 'On' : 'Off'}
             </button>
+          </div>
+          <div className="setting">
+            <label>Output resolution</label>
+            <select
+              value={resolution}
+              onChange={(event) =>
+                setResolution(event.target.value as '1080x1920' | '1280x960' | '1360x1824')
+              }
+            >
+              <option value="1080x1920">1080×1920 (Stories)</option>
+              <option value="1280x960">1280×960 (Landscape)</option>
+              <option value="1360x1824">1360×1824 (Meta Glasses)</option>
+            </select>
           </div>
           <div className="setting">
             <label>VHS preset</label>
