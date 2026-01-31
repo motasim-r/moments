@@ -38,7 +38,7 @@ DEFAULT_SETTINGS = {
     "grain_amount": 0.5,
     "vhs_engine": "ntsc-rs",
     "ntsc_preset": "custom",
-    "resolution": "1080x1920",
+    "resolution": "1360x1824",
     "fps": 30,
     "seed": None,
     "include_clip_audio": False,
@@ -190,8 +190,13 @@ def _render_dynamic_ntsc(
     return ntsc_path
 
 
-def preprocess_clips(paths: JobPaths, clips: list[ClipInput]) -> list[ProxyClip]:
+def preprocess_clips(
+    paths: JobPaths,
+    clips: list[ClipInput],
+    settings: dict[str, Any],
+) -> list[ProxyClip]:
     proxies: list[ProxyClip] = []
+    target_width, target_height = _resolve_resolution(settings)
     for clip in clips:
         proxy_path = paths.proxy_dir / f"{clip.clip_id}.mp4"
         args = [
@@ -200,7 +205,11 @@ def preprocess_clips(paths: JobPaths, clips: list[ClipInput]) -> list[ProxyClip]
             "-i",
             str(clip.path),
             "-vf",
-            "scale=540:960:force_original_aspect_ratio=decrease,pad=540:960:(ow-iw)/2:(oh-ih)/2,setsar=1",
+            (
+                "scale="
+                f"{target_width}:{target_height}:force_original_aspect_ratio=cover,"
+                f"crop={target_width}:{target_height},setsar=1"
+            ),
             "-r",
             "30",
             "-c:v",
@@ -680,7 +689,7 @@ def render_reel(
     concat_inputs = "".join(f"[v{idx}]" for idx in range(len(timeline)))
     filter_parts.append(f"{concat_inputs}concat=n={len(timeline)}:v=1:a=0[vcat]")
     filter_parts.append(
-        f"[vcat]fps={fps},scale={width}:{height}:flags=lanczos,format=yuv420p[vbase]"
+        f"[vcat]fps={fps},scale={width}:{height}:force_original_aspect_ratio=cover:flags=lanczos,crop={width}:{height},format=yuv420p[vbase]"
     )
     audio_index = len(timeline)
     filter_parts.append(
@@ -809,13 +818,15 @@ def render_reel(
         )
 
     preview_path = paths.output_dir / "preview.mp4"
+    preview_width = max(2, (width // 2) // 2 * 2)
+    preview_height = max(2, (height // 2) // 2 * 2)
     args_preview = [
         "ffmpeg",
         "-y",
         "-i",
         str(final_path),
         "-vf",
-        "scale=720:1280:flags=lanczos",
+        f"scale={preview_width}:{preview_height}:flags=lanczos",
         "-c:v",
         "libx264",
         "-preset",
@@ -851,7 +862,7 @@ def run_job(job_id: str, clips: list[ClipInput], song_path: Path, settings: dict
     )
 
     try:
-        proxies = preprocess_clips(paths, clips)
+        proxies = preprocess_clips(paths, clips, settings)
 
         _update_status(
             paths,
