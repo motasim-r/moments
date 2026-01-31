@@ -340,12 +340,20 @@ typedef NS_ENUM(NSInteger, QGDeviceActionType) {
 @property(nonatomic,copy)NSString *wifiSSID;
 @property(nonatomic,copy)NSString *wifiPassword;
 @property(nonatomic,strong)NSArray<NSString *> *downloadedFiles;
+@property(nonatomic,strong)NSTimer *wifiCountdownTimer;
+@property(nonatomic,assign)NSInteger wifiCountdownRemaining;
+@property(nonatomic,assign)NSInteger downloadRetryCount;
+@property(nonatomic,assign)NSInteger syncRetryCount;
+@property(nonatomic,assign)BOOL downloadHasStarted;
+@property(nonatomic,assign)BOOL syncHasStarted;
 @end
 
 @implementation ViewController
 
 static NSString *const kBridgeServerURLKey = @"BridgeServerURL";
 static NSString *const kDefaultServerURL = @"http://MOs-MacBook-Pro.local:8000";
+static const NSInteger kWifiCountdownSeconds = 40;
+static const NSInteger kMaxWifiRetries = 3;
 
 - (void)viewDidLoad {
     [super viewDidLoad];
@@ -375,6 +383,66 @@ static NSString *const kDefaultServerURL = @"http://MOs-MacBook-Pro.local:8000";
     self.serverURL = savedURL.length > 0 ? savedURL : kDefaultServerURL;
     self.syncStatus = @"Idle";
     self.downloadedFiles = [self scanDownloadedMediaPaths];
+}
+
+- (void)openWifiSettings {
+    NSURL *wifiURL = [NSURL URLWithString:@"App-Prefs:root=WIFI"];
+    if (wifiURL && [[UIApplication sharedApplication] canOpenURL:wifiURL]) {
+        [[UIApplication sharedApplication] openURL:wifiURL options:@{} completionHandler:nil];
+        return;
+    }
+    NSURL *settingsURL = [NSURL URLWithString:UIApplicationOpenSettingsURLString];
+    if (settingsURL) {
+        [[UIApplication sharedApplication] openURL:settingsURL options:@{} completionHandler:nil];
+    }
+}
+
+- (void)stopWifiCountdown {
+    if (self.wifiCountdownTimer) {
+        [self.wifiCountdownTimer invalidate];
+        self.wifiCountdownTimer = nil;
+    }
+    self.wifiCountdownRemaining = 0;
+}
+
+- (void)startWifiCountdownForDownload {
+    [self stopWifiCountdown];
+    self.wifiCountdownRemaining = kWifiCountdownSeconds;
+    self.wifiCountdownTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 target:self selector:@selector(tickWifiCountdownDownload) userInfo:nil repeats:YES];
+}
+
+- (void)startWifiCountdownForSync {
+    [self stopWifiCountdown];
+    self.wifiCountdownRemaining = kWifiCountdownSeconds;
+    self.wifiCountdownTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 target:self selector:@selector(tickWifiCountdownSync) userInfo:nil repeats:YES];
+}
+
+- (void)tickWifiCountdownDownload {
+    if (self.wifiCountdownRemaining <= 0) {
+        [self stopWifiCountdown];
+        self.downloadMediaResourcesInfo = @"Wi-Fi timeout. Tap again to re-open.";
+        [self.tableView reloadData];
+        return;
+    }
+    self.wifiCountdownRemaining -= 1;
+    if (self.wifiSSID.length > 0) {
+        self.downloadMediaResourcesInfo = [NSString stringWithFormat:@"Join Wi-Fi: %@ / %@ • %lds", self.wifiSSID, self.wifiPassword ?: @"", (long)self.wifiCountdownRemaining];
+        [self.tableView reloadData];
+    }
+}
+
+- (void)tickWifiCountdownSync {
+    if (self.wifiCountdownRemaining <= 0) {
+        [self stopWifiCountdown];
+        self.syncStatus = @"Wi-Fi timeout. Tap again to re-open.";
+        [self.tableView reloadData];
+        return;
+    }
+    self.wifiCountdownRemaining -= 1;
+    if (self.wifiSSID.length > 0) {
+        self.syncStatus = [NSString stringWithFormat:@"Join Wi-Fi: %@ / %@ • %lds", self.wifiSSID, self.wifiPassword ?: @"", (long)self.wifiCountdownRemaining];
+        [self.tableView reloadData];
+    }
 }
 
 - (NSArray<NSString *> *)scanDownloadedMediaPaths {
@@ -586,6 +654,8 @@ static NSString *const kDefaultServerURL = @"http://MOs-MacBook-Pro.local:8000";
         return;
     }
     
+    self.downloadRetryCount = 0;
+    self.downloadHasStarted = NO;
     self.downloadMediaResourcesInfo = @"opening Wi-Fi...";
     [self.tableView reloadData];
 
@@ -594,12 +664,13 @@ static NSString *const kDefaultServerURL = @"http://MOs-MacBook-Pro.local:8000";
             self.wifiSSID = ssid;
             self.wifiPassword = password;
             self.downloadMediaResourcesInfo = [NSString stringWithFormat:@"Join Wi-Fi: %@ / %@", ssid, password];
+            [self startWifiCountdownForDownload];
             [self.tableView reloadData];
-            [self showAlertWithTitle:@"Connect to Glasses Wi-Fi"
-                             message:[NSString stringWithFormat:@"Join Wi-Fi network \"%@\" with password \"%@\" in Settings, then tap Start Download.", ssid, password]
-                         confirmText:@"Start Download"
-                              cancel:YES
-                             confirm:^{
+            [self showWifiJoinAlertWithTitle:@"Connect to Glasses Wi-Fi"
+                                     message:[NSString stringWithFormat:@"Join Wi-Fi network \"%@\" with password \"%@\" in Settings, then tap Start Download.", ssid, password]
+                                 confirmText:@"Start Download"
+                                      confirm:^{
+                [self stopWifiCountdown];
                 [self startDownloadOnly];
             }];
         });
@@ -617,6 +688,9 @@ static NSString *const kDefaultServerURL = @"http://MOs-MacBook-Pro.local:8000";
 
     [[QCSDKManager shareInstance] startToDownloadMediaResourceWithProgress:^(NSInteger receivedSize, NSInteger expectedSize, CGFloat progress) {
         dispatch_async(dispatch_get_main_queue(), ^{
+            if (progress > 0.01) {
+                self.downloadHasStarted = YES;
+            }
             self.downloadMediaResourcesInfo = [NSString stringWithFormat:@"download progress:%.0f%%",progress*100];
             NSLog(@"download progress:%.0f%%",progress*100);
             [self.tableView reloadData];
@@ -624,11 +698,21 @@ static NSString *const kDefaultServerURL = @"http://MOs-MacBook-Pro.local:8000";
     } completion:^(NSString * _Nullable filePath, NSError * _Nullable error,NSInteger index,NSInteger count) {
         dispatch_async(dispatch_get_main_queue(), ^{
             if (error) {
+                if (!self.downloadHasStarted && self.downloadRetryCount < kMaxWifiRetries) {
+                    self.downloadRetryCount += 1;
+                    self.downloadMediaResourcesInfo = [NSString stringWithFormat:@"download error. Retrying %ld/%ld…", (long)self.downloadRetryCount, (long)kMaxWifiRetries];
+                    [self.tableView reloadData];
+                    [self retryDownloadAfterDelay];
+                    return;
+                }
                 self.downloadMediaResourcesInfo = [NSString stringWithFormat:@"download error: %@", error.localizedDescription ?: @"internal error"];
                 [self.tableView reloadData];
                 return;
             }
             NSLog(@"download success(%zd) at :%@",index+1,filePath);
+            if (filePath.length > 0) {
+                self.downloadHasStarted = YES;
+            }
             [self refreshDownloadedMedia];
             if (index == count - 1) {
                 NSLog(@"download finished");
@@ -637,6 +721,34 @@ static NSString *const kDefaultServerURL = @"http://MOs-MacBook-Pro.local:8000";
             }
         });
     }];
+}
+
+- (void)retryDownloadAfterDelay {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        self.downloadMediaResourcesInfo = @"opening Wi-Fi...";
+        [self.tableView reloadData];
+        [QCSDKCmdCreator openWifiWithMode:QCOperatorDeviceModeTransfer success:^(NSString *ssid, NSString *password) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                self.wifiSSID = ssid;
+                self.wifiPassword = password;
+                self.downloadMediaResourcesInfo = [NSString stringWithFormat:@"Join Wi-Fi: %@ / %@", ssid, password];
+                [self startWifiCountdownForDownload];
+                [self.tableView reloadData];
+                [self showWifiJoinAlertWithTitle:@"Connect to Glasses Wi-Fi"
+                                         message:[NSString stringWithFormat:@"Join Wi-Fi network \"%@\" with password \"%@\" in Settings, then tap Start Download.", ssid, password]
+                                     confirmText:@"Start Download"
+                                          confirm:^{
+                    [self stopWifiCountdown];
+                    [self startDownloadOnly];
+                }];
+            });
+        } fail:^(NSInteger code) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                self.downloadMediaResourcesInfo = [NSString stringWithFormat:@"wifi error: %ld", (long)code];
+                [self.tableView reloadData];
+            });
+        }];
+    });
 }
 
 - (NSURL *)localUploadURL {
@@ -724,6 +836,8 @@ static NSString *const kDefaultServerURL = @"http://MOs-MacBook-Pro.local:8000";
         return;
     }
 
+    self.syncRetryCount = 0;
+    self.syncHasStarted = NO;
     self.syncStatus = @"opening Wi-Fi...";
     [self.tableView reloadData];
 
@@ -732,12 +846,13 @@ static NSString *const kDefaultServerURL = @"http://MOs-MacBook-Pro.local:8000";
             self.wifiSSID = ssid;
             self.wifiPassword = password;
             self.syncStatus = [NSString stringWithFormat:@"Join Wi-Fi: %@ / %@", ssid, password];
+            [self startWifiCountdownForSync];
             [self.tableView reloadData];
-            [self showAlertWithTitle:@"Connect to Glasses Wi-Fi"
-                             message:[NSString stringWithFormat:@"Join Wi-Fi network \"%@\" with password \"%@\" in Settings, then tap Start Sync.", ssid, password]
-                         confirmText:@"Start Sync"
-                              cancel:YES
-                             confirm:^{
+            [self showWifiJoinAlertWithTitle:@"Connect to Glasses Wi-Fi"
+                                     message:[NSString stringWithFormat:@"Join Wi-Fi network \"%@\" with password \"%@\" in Settings, then tap Start Sync.", ssid, password]
+                                 confirmText:@"Start Sync"
+                                      confirm:^{
+                [self stopWifiCountdown];
                 [self startDownloadAndUpload];
             }];
         });
@@ -758,12 +873,22 @@ static NSString *const kDefaultServerURL = @"http://MOs-MacBook-Pro.local:8000";
 
     [[QCSDKManager shareInstance] startToDownloadMediaResourceWithProgress:^(NSInteger receivedSize, NSInteger expectedSize, CGFloat progress) {
         dispatch_async(dispatch_get_main_queue(), ^{
+            if (progress > 0.01) {
+                self.syncHasStarted = YES;
+            }
             self.syncStatus = [NSString stringWithFormat:@"download %.0f%%", progress * 100];
             [self.tableView reloadData];
         });
     } completion:^(NSString * _Nullable filePath, NSError * _Nullable error, NSInteger index, NSInteger count) {
         if (error || filePath.length == 0) {
             dispatch_async(dispatch_get_main_queue(), ^{
+                if (!self.syncHasStarted && self.syncRetryCount < kMaxWifiRetries) {
+                    self.syncRetryCount += 1;
+                    self.syncStatus = [NSString stringWithFormat:@"download error. Retrying %ld/%ld…", (long)self.syncRetryCount, (long)kMaxWifiRetries];
+                    [self.tableView reloadData];
+                    [self retrySyncAfterDelay];
+                    return;
+                }
                 self.syncStatus = error ? [NSString stringWithFormat:@"download error: %@", error.localizedDescription ?: @"internal error"] : @"download error";
                 [self.tableView reloadData];
             });
@@ -771,6 +896,7 @@ static NSString *const kDefaultServerURL = @"http://MOs-MacBook-Pro.local:8000";
         }
 
         totalCount = count;
+        self.syncHasStarted = YES;
         [self refreshDownloadedMedia];
         [self uploadFileAtPath:filePath completion:^(BOOL success, NSString *detail) {
             uploadedCount += 1;
@@ -780,6 +906,34 @@ static NSString *const kDefaultServerURL = @"http://MOs-MacBook-Pro.local:8000";
             });
         }];
     }];
+}
+
+- (void)retrySyncAfterDelay {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        self.syncStatus = @"opening Wi-Fi...";
+        [self.tableView reloadData];
+        [QCSDKCmdCreator openWifiWithMode:QCOperatorDeviceModeTransfer success:^(NSString *ssid, NSString *password) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                self.wifiSSID = ssid;
+                self.wifiPassword = password;
+                self.syncStatus = [NSString stringWithFormat:@"Join Wi-Fi: %@ / %@", ssid, password];
+                [self startWifiCountdownForSync];
+                [self.tableView reloadData];
+                [self showWifiJoinAlertWithTitle:@"Connect to Glasses Wi-Fi"
+                                         message:[NSString stringWithFormat:@"Join Wi-Fi network \"%@\" with password \"%@\" in Settings, then tap Start Sync.", ssid, password]
+                                     confirmText:@"Start Sync"
+                                          confirm:^{
+                    [self stopWifiCountdown];
+                    [self startDownloadAndUpload];
+                }];
+            });
+        } fail:^(NSInteger code) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                self.syncStatus = [NSString stringWithFormat:@"wifi error: %ld", (long)code];
+                [self.tableView reloadData];
+            });
+        }];
+    });
 }
 
 - (void)editServerURL {
@@ -1302,6 +1456,39 @@ static NSString *const kDefaultServerURL = @"http://MOs-MacBook-Pro.local:8000";
     }];
 
     [alert addAction:confirm];
+
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)showWifiJoinAlertWithTitle:(NSString *)title
+                           message:(NSString *)message
+                       confirmText:(NSString *)confirmText
+                           confirm:(void (^)(void))confirmBlock {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
+                                                                   message:message
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+
+    UIAlertAction *wifiSettings = [UIAlertAction actionWithTitle:@"Open Wi-Fi Settings"
+                                                           style:UIAlertActionStyleDefault
+                                                         handler:^(UIAlertAction * _Nonnull action) {
+        [self openWifiSettings];
+    }];
+
+    UIAlertAction *confirm = [UIAlertAction actionWithTitle:confirmText ?: @"OK"
+                                                      style:UIAlertActionStyleDefault
+                                                    handler:^(UIAlertAction * _Nonnull action) {
+        if (confirmBlock) {
+            confirmBlock();
+        }
+    }];
+
+    UIAlertAction *cancel = [UIAlertAction actionWithTitle:@"Cancel"
+                                                     style:UIAlertActionStyleCancel
+                                                   handler:nil];
+
+    [alert addAction:wifiSettings];
+    [alert addAction:confirm];
+    [alert addAction:cancel];
 
     [self presentViewController:alert animated:YES completion:nil];
 }

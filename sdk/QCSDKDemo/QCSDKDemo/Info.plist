@@ -34,6 +34,10 @@
 		<string>_http._tcp</string>
 		<string>_http._udp</string>
 	</array>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>App-Prefs</string>
+	</array>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>bluetooth-central</string>
