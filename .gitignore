@@ -4,6 +4,7 @@ apps/web/.vite
 server/.venv
 server/__pycache__
 server/jobs
+server/library
 server/**/*.pyc
 server/scripts/tmp-assets
 server/api.log

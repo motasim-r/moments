@@ -28,6 +28,12 @@ type VersionInfo = {
   }
 }
 
+type LibraryItem = {
+  name: string
+  size: number
+  modified_at: string
+}
+
 const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000'
 
 const allowedClipExt = ['mp4', 'mov', 'webm']
@@ -54,9 +60,16 @@ function getFileExt(name: string) {
   return parts.length > 1 ? parts[parts.length - 1] : ''
 }
 
+function formatDate(value: string) {
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.valueOf())) return value
+  return parsed.toLocaleString()
+}
+
 function App() {
   const [clips, setClips] = useState<ClipItem[]>([])
   const [song, setSong] = useState<File | null>(null)
+  const [clipSource, setClipSource] = useState<'local' | 'glasses'>('local')
   const [targetLength, setTargetLength] = useState(15)
   const [vibe, setVibe] = useState<'hype' | 'chill' | 'chaotic'>('hype')
   const [vhsIntensity, setVhsIntensity] = useState(0.7)
@@ -75,14 +88,24 @@ function App() {
   const [edlText, setEdlText] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [versionInfo, setVersionInfo] = useState<VersionInfo | null>(null)
+  const [libraryItems, setLibraryItems] = useState<LibraryItem[]>([])
+  const [librarySelected, setLibrarySelected] = useState<string[]>([])
+  const [libraryLocked, setLibraryLocked] = useState<string[]>([])
+  const [libraryMessage, setLibraryMessage] = useState<string | null>(null)
+  const [libraryError, setLibraryError] = useState<string | null>(null)
+  const [importPath, setImportPath] = useState('')
 
   const lockedClipNames = useMemo(
-    () => clips.filter((clip) => clip.locked).map((clip) => clip.file.name),
-    [clips],
+    () =>
+      clipSource === 'glasses'
+        ? libraryLocked
+        : clips.filter((clip) => clip.locked).map((clip) => clip.file.name),
+    [clipSource, clips, libraryLocked],
   )
 
   const handleClipFiles = (files: FileList | null) => {
     if (!files) return
+    setClipSource('local')
     const next: ClipItem[] = []
     Array.from(files).forEach((file) => {
       const ext = getFileExt(file.name)
@@ -114,37 +137,51 @@ function App() {
     setEdlText(null)
     setPreviewUrl(null)
     setFinalUrl(null)
-    if (clips.length === 0) {
-      setError('Please add at least one clip.')
-      return
-    }
     if (!song) {
       setError('Please add a song.')
       return
     }
 
-    const payload = new FormData()
-    clips.forEach((clip) => payload.append('clips', clip.file))
-    payload.append('song', song)
-    payload.append(
-      'settings',
-      JSON.stringify({
-        target_length_s: targetLength,
-        vibe,
-        vhs_intensity: vhsIntensity,
-        glitch_amount: glitchAmount,
-        include_clip_audio: includeClipAudio,
-        locked_clips: lockedClipNames,
-        ntsc_preset: ntscPreset,
-        resolution,
-        seed: Math.floor(Math.random() * 1_000_000),
-      }),
-    )
-
-    const response = await fetch(`${API_BASE}/jobs`, {
-      method: 'POST',
-      body: payload,
+    const settingsPayload = JSON.stringify({
+      target_length_s: targetLength,
+      vibe,
+      vhs_intensity: vhsIntensity,
+      glitch_amount: glitchAmount,
+      include_clip_audio: includeClipAudio,
+      locked_clips: lockedClipNames,
+      ntsc_preset: ntscPreset,
+      resolution,
+      seed: Math.floor(Math.random() * 1_000_000),
     })
+
+    let response: Response
+    if (clipSource === 'glasses') {
+      if (librarySelected.length === 0) {
+        setError('Please select at least one glasses clip.')
+        return
+      }
+      const payload = new FormData()
+      payload.append('clip_names', JSON.stringify(librarySelected))
+      payload.append('song', song)
+      payload.append('settings', settingsPayload)
+      response = await fetch(`${API_BASE}/jobs/from-library`, {
+        method: 'POST',
+        body: payload,
+      })
+    } else {
+      if (clips.length === 0) {
+        setError('Please add at least one clip.')
+        return
+      }
+      const payload = new FormData()
+      clips.forEach((clip) => payload.append('clips', clip.file))
+      payload.append('song', song)
+      payload.append('settings', settingsPayload)
+      response = await fetch(`${API_BASE}/jobs`, {
+        method: 'POST',
+        body: payload,
+      })
+    }
     if (!response.ok) {
       const detail = await response.json().catch(() => ({}))
       setError(detail.detail ?? 'Failed to create job')
@@ -171,11 +208,111 @@ function App() {
     setEdlText(text)
   }
 
+  const refreshLibrary = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/glasses/library`)
+      if (!response.ok) {
+        setLibraryError('Failed to load glasses library')
+        return
+      }
+      const data = (await response.json()) as { items: LibraryItem[] }
+      setLibraryItems(data.items ?? [])
+      const names = new Set((data.items ?? []).map((item) => item.name))
+      setLibrarySelected((current) => current.filter((name) => names.has(name)))
+      setLibraryLocked((current) => current.filter((name) => names.has(name)))
+      setLibraryError(null)
+    } catch {
+      setLibraryError('Failed to load glasses library')
+    }
+  }
+
+  const handleLibraryImport = async (files: FileList | null) => {
+    if (!files || files.length === 0) return
+    setLibraryError(null)
+    setLibraryMessage('Importing glasses footage…')
+    const payload = new FormData()
+    Array.from(files).forEach((file) => payload.append('clips', file))
+    try {
+      const response = await fetch(`${API_BASE}/glasses/import`, {
+        method: 'POST',
+        body: payload,
+      })
+      if (!response.ok) {
+        setLibraryError('Failed to import glasses footage')
+        setLibraryMessage(null)
+        return
+      }
+      const data = (await response.json()) as { count?: number }
+      setLibraryMessage(`Imported ${data.count ?? 0} clips into the glasses library.`)
+      void refreshLibrary()
+    } catch {
+      setLibraryError('Failed to import glasses footage')
+      setLibraryMessage(null)
+    }
+  }
+
+  const handleLibraryImportPath = async () => {
+    if (!importPath.trim()) {
+      setLibraryError('Please enter a folder path to import from.')
+      return
+    }
+    setLibraryError(null)
+    setLibraryMessage('Scanning folder for glasses footage…')
+    try {
+      const response = await fetch(`${API_BASE}/glasses/import-path`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: importPath.trim(), recursive: true }),
+      })
+      if (!response.ok) {
+        const detail = await response.json().catch(() => ({}))
+        setLibraryError(detail.detail ?? 'Failed to import from folder')
+        setLibraryMessage(null)
+        return
+      }
+      const data = (await response.json()) as { count?: number }
+      setLibraryMessage(`Imported ${data.count ?? 0} clips from folder.`)
+      void refreshLibrary()
+    } catch {
+      setLibraryError('Failed to import from folder')
+      setLibraryMessage(null)
+    }
+  }
+
+  const toggleLibrarySelected = (name: string) => {
+    if (!librarySelected.includes(name) && librarySelected.length >= 20) {
+      setLibraryError('Maximum of 20 clips allowed.')
+      return
+    }
+    setLibrarySelected((current) => {
+      if (current.includes(name)) {
+        setLibraryLocked((locked) => locked.filter((item) => item !== name))
+        return current.filter((item) => item !== name)
+      }
+      return [...current, name]
+    })
+  }
+
+  const toggleLibraryLocked = (name: string) => {
+    setLibraryLocked((current) =>
+      current.includes(name)
+        ? current.filter((item) => item !== name)
+        : [...current, name],
+    )
+    setLibrarySelected((current) =>
+      current.includes(name) ? current : [...current, name],
+    )
+  }
+
   useEffect(() => {
     fetch(`${API_BASE}/version`)
       .then((response) => response.json())
       .then((data: VersionInfo) => setVersionInfo(data))
       .catch(() => setVersionInfo(null))
+  }, [])
+
+  useEffect(() => {
+    void refreshLibrary()
   }, [])
 
   useEffect(() => {
@@ -251,6 +388,24 @@ function App() {
           <h2>1. Drop your assets</h2>
           <p>Up to 20 clips. MP4/MOV/WEBM + one MP3/M4A/WAV track.</p>
         </div>
+        <div className="source-toggle">
+          <span>Clip source</span>
+          <div className="segmented">
+            <button
+              className={clipSource === 'local' ? 'active' : ''}
+              onClick={() => setClipSource('local')}
+            >
+              Local uploads
+            </button>
+            <button
+              className={clipSource === 'glasses' ? 'active' : ''}
+              onClick={() => setClipSource('glasses')}
+            >
+              Glasses library
+            </button>
+          </div>
+        </div>
+        {clipSource === 'local' ? (
         <div className="drop-grid">
           <label
             className="dropzone"
@@ -290,34 +445,144 @@ function App() {
             </div>
           </label>
         </div>
-        <div className="asset-list">
-          {clips.length === 0 ? (
-            <p className="muted">No clips yet.</p>
-          ) : (
-            clips.map((clip) => (
-              <div className="asset-item" key={clip.id}>
-                <div>
-                  <strong>{clip.file.name}</strong>
-                  <span>{formatSize(clip.file.size)}</span>
-                </div>
+        ) : (
+          <div className="drop-grid">
+            <div className="library-card">
+              <h3>Glasses Library</h3>
+              <p>
+                Import footage captured on the glasses. Use the mobile SDK to pull
+                clips over Wi-Fi/BLE, then drop them here or import from the
+                download folder.
+              </p>
+              <div className="library-actions">
+                <label className="chip">
+                  Import files
+                  <input
+                    type="file"
+                    multiple
+                    accept="video/mp4,video/quicktime,video/webm"
+                    onChange={(event) => handleLibraryImport(event.target.files)}
+                  />
+                </label>
+                <button className="chip" onClick={refreshLibrary}>
+                  Refresh
+                </button>
                 <button
-                  className={clip.locked ? 'chip active' : 'chip'}
-                  onClick={() =>
-                    setClips((current) =>
-                      current.map((item) =>
-                        item.id === clip.id
-                          ? { ...item, locked: !item.locked }
-                          : item,
-                      ),
-                    )
-                  }
+                  className="chip"
+                  onClick={() => {
+                    setLibrarySelected([])
+                    setLibraryLocked([])
+                  }}
                 >
-                  {clip.locked ? 'Locked' : 'Lock clip'}
+                  Clear selection
                 </button>
               </div>
-            ))
-          )}
-        </div>
+              <p className="muted">
+                Selected {librarySelected.length} of {libraryItems.length} clips
+                (max 20).
+              </p>
+              <div className="library-path">
+                <input
+                  type="text"
+                  value={importPath}
+                  onChange={(event) => setImportPath(event.target.value)}
+                  placeholder="/Users/you/GlassesDownloads"
+                />
+                <button className="chip" onClick={handleLibraryImportPath}>
+                  Import folder
+                </button>
+              </div>
+              {libraryMessage && <p className="note">{libraryMessage}</p>}
+              {libraryError && <p className="error">{libraryError}</p>}
+            </div>
+            <label
+              className="dropzone"
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={(event) => {
+                event.preventDefault()
+                handleSongFile(event.dataTransfer.files)
+              }}
+            >
+              <input
+                type="file"
+                accept="audio/mpeg,audio/mp4,audio/wav"
+                onChange={(event) => handleSongFile(event.target.files)}
+              />
+              <div>
+                <h3>Music Track</h3>
+                <p>{song ? song.name : 'Drop your song or click to select'}</p>
+              </div>
+            </label>
+          </div>
+        )}
+        {clipSource === 'local' ? (
+          <div className="asset-list">
+            {clips.length === 0 ? (
+              <p className="muted">No clips yet.</p>
+            ) : (
+              clips.map((clip) => (
+                <div className="asset-item" key={clip.id}>
+                  <div>
+                    <strong>{clip.file.name}</strong>
+                    <span>{formatSize(clip.file.size)}</span>
+                  </div>
+                  <button
+                    className={clip.locked ? 'chip active' : 'chip'}
+                    onClick={() =>
+                      setClips((current) =>
+                        current.map((item) =>
+                          item.id === clip.id
+                            ? { ...item, locked: !item.locked }
+                            : item,
+                        ),
+                      )
+                    }
+                  >
+                    {clip.locked ? 'Locked' : 'Lock clip'}
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+        ) : (
+          <div className="asset-list">
+            {libraryItems.length === 0 ? (
+              <p className="muted">No glasses clips yet. Import to get started.</p>
+            ) : (
+              libraryItems.map((item) => {
+                const selected = librarySelected.includes(item.name)
+                const locked = libraryLocked.includes(item.name)
+                return (
+                  <div
+                    className={selected ? 'asset-item selected' : 'asset-item'}
+                    key={item.name}
+                  >
+                    <div>
+                      <strong>{item.name}</strong>
+                      <span>
+                        {formatSize(item.size)} • {formatDate(item.modified_at)}
+                      </span>
+                    </div>
+                    <div className="asset-actions">
+                      <button
+                        className={selected ? 'chip active' : 'chip'}
+                        onClick={() => toggleLibrarySelected(item.name)}
+                      >
+                        {selected ? 'Selected' : 'Use clip'}
+                      </button>
+                      <button
+                        className={locked ? 'chip active' : 'chip'}
+                        onClick={() => toggleLibraryLocked(item.name)}
+                      >
+                        {locked ? 'Locked' : 'Lock clip'}
+                      </button>
+                    </div>
+                  </div>
+                )
+              })
+            )}
+          </div>
+        )}
       </section>
 
       <section className="panel">
