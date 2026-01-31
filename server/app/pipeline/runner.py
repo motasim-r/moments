@@ -38,6 +38,7 @@ DEFAULT_SETTINGS = {
     "grain_amount": 0.5,
     "vhs_engine": "ntsc-rs",
     "ntsc_preset": "custom",
+    "vhs_overlay": True,
     "resolution": "1360x1824",
     "fps": 30,
     "seed": None,
@@ -640,6 +641,72 @@ def _vhs_filter(intensity: float) -> str:
     )
 
 
+def _find_font() -> Optional[str]:
+    candidates = [
+        "/System/Library/Fonts/Supplemental/Courier New.ttf",
+        "/System/Library/Fonts/Supplemental/Andale Mono.ttf",
+        "/System/Library/Fonts/Supplemental/Verdana.ttf",
+        "/System/Library/Fonts/Menlo.ttc",
+        "/Library/Fonts/Arial.ttf",
+    ]
+    for path in candidates:
+        if Path(path).exists():
+            return path
+    return None
+
+
+def _drawtext_glitch(
+    text: str,
+    x_expr: str,
+    y_expr: str,
+    fontsize: int,
+    align_right: bool = False,
+) -> list[str]:
+    fontfile = _find_font()
+    font_opt = f"fontfile='{fontfile}':" if fontfile else ""
+    align_opt = ":x=w-tw-24" if align_right else f":x={x_expr}"
+
+    base = (
+        f"drawtext={font_opt}text='{text}'{align_opt}:y={y_expr}:"
+        f"fontsize={fontsize}:fontcolor=white@0.86:shadowcolor=black@0.7:"
+        f"shadowx=1:shadowy=1"
+    )
+    red = (
+        f"drawtext={font_opt}text='{text}'{align_opt}:y={y_expr}+1:"
+        f"fontsize={fontsize}:fontcolor=#ff3b3b@0.35"
+    )
+    cyan = (
+        f"drawtext={font_opt}text='{text}'{align_opt}:y={y_expr}-1:"
+        f"fontsize={fontsize}:fontcolor=#44d9ff@0.35"
+    )
+    return [base, red, cyan]
+
+
+def _vhs_overlay_filter(width: int, height: int) -> str:
+    font_size = max(20, int(height * 0.03))
+    font_small = max(16, int(font_size * 0.78))
+    line_gap = int(font_size * 0.85)
+    jitter_x = "2*sin(2*PI*t*1.6)"
+    jitter_y = "1*sin(2*PI*t*2.2)"
+
+    x_left = f"24+{jitter_x}"
+    y_top = f"24+{jitter_y}"
+
+    overlays: list[str] = []
+    overlays += _drawtext_glitch("CAMERA1", x_left, y_top, font_size)
+    overlays += _drawtext_glitch("PLAY >", x_left, f"{y_top}+{line_gap}", font_size)
+    overlays += _drawtext_glitch("%{pts\\:hms}", x_left, f"{y_top}+{line_gap * 2}", font_small)
+
+    overlays += _drawtext_glitch("VCR TAPE", "w-tw-24", y_top, font_size, align_right=True)
+    overlays += _drawtext_glitch("IPHONE", "w-tw-24", f"{y_top}+{line_gap}", font_small, align_right=True)
+
+    y_bottom = f"h-{line_gap * 3}"
+    overlays += _drawtext_glitch("%{localtime\\:%H\\:%M}", x_left, y_bottom, font_size)
+    overlays += _drawtext_glitch("%{localtime\\:%d.%m.%Y %a}", x_left, f"{y_bottom}+{line_gap}", font_small)
+
+    return ",".join(overlays)
+
+
 def _resolve_resolution(settings: dict[str, Any]) -> tuple[int, int]:
     raw = settings.get("resolution", "1080x1920")
     if isinstance(raw, str) and "x" in raw:
@@ -689,8 +756,14 @@ def render_reel(
     concat_inputs = "".join(f"[v{idx}]" for idx in range(len(timeline)))
     filter_parts.append(f"{concat_inputs}concat=n={len(timeline)}:v=1:a=0[vcat]")
     filter_parts.append(
-        f"[vcat]fps={fps},scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos,crop={width}:{height},format=yuv420p[vbase]"
+        f"[vcat]fps={fps},scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos,crop={width}:{height},format=yuv420p[vscaled]"
     )
+
+    if settings.get("vhs_overlay", True):
+        overlay_filter = _vhs_overlay_filter(width, height)
+        filter_parts.append(f"[vscaled]{overlay_filter}[vbase]")
+    else:
+        filter_parts.append("[vscaled]null[vbase]")
     audio_index = len(timeline)
     filter_parts.append(
         f"[{audio_index}:a]atrim=0:{target_length},asetpts=PTS-STARTPTS[aout]"
