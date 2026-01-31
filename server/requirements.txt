@@ -6,3 +6,5 @@ Pillow==11.1.0
 torch==2.2.2
 transformers==4.48.2
 numpy==1.26.4
+librosa==0.10.2.post1
+soundfile==0.12.1

@@ -4,10 +4,12 @@ import json
 import random
 import uuid
 from dataclasses import dataclass
+from bisect import bisect_left
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 from app.ai.fastvlm import tag_frame
+from app.audio.beat import detect_beats, write_beats
 from app.utils.ffmpeg import FFmpegError, ffprobe_duration, run_ffmpeg
 from app.utils.ntsc import run_ntsc_cli
 from app.utils.paths import JobPaths, ROOT_DIR, ensure_job_dirs
@@ -450,6 +452,75 @@ def _build_vlm_timeline(
     return selected
 
 
+def _nearest_beat(beat_times: list[float], target: float) -> tuple[Optional[float], float]:
+    if not beat_times:
+        return (None, float("inf"))
+    index = bisect_left(beat_times, target)
+    candidates = []
+    if index < len(beat_times):
+        candidates.append(beat_times[index])
+    if index > 0:
+        candidates.append(beat_times[index - 1])
+    best = min(candidates, key=lambda beat: abs(beat - target))
+    return best, abs(best - target)
+
+
+def _snap_timeline_to_beats(
+    timeline: list[dict[str, Any]],
+    proxies: list[ProxyClip],
+    beat_times: list[float],
+    target_length: float,
+    tolerance: float = 0.12,
+) -> int:
+    if not timeline or not beat_times:
+        return 0
+
+    clip_durations = {proxy.clip_id: proxy.duration for proxy in proxies}
+    total = 0.0
+    snapped = 0
+
+    for index in range(len(timeline) - 1):
+        segment = timeline[index]
+        duration = segment["out"] - segment["in"]
+        total += duration
+        beat, diff = _nearest_beat(beat_times, total)
+        if beat is None or diff > tolerance:
+            continue
+
+        delta = beat - total
+        clip_duration = clip_durations.get(segment["clip_id"], duration)
+        max_extend = max(0.0, min(0.25, clip_duration - segment["out"]))
+        max_shorten = max(0.0, min(0.25, duration - 0.5))
+        if delta > 0:
+            delta = min(delta, max_extend)
+        else:
+            delta = max(delta, -max_shorten)
+
+        if abs(delta) < 0.01:
+            continue
+
+        segment["out"] = round(segment["out"] + delta, 3)
+        total += delta
+        snapped += 1
+
+    desired_total = target_length
+    total += timeline[-1]["out"] - timeline[-1]["in"]
+    tail_adjust = desired_total - total
+    if abs(tail_adjust) > 0.05:
+        last = timeline[-1]
+        duration = last["out"] - last["in"]
+        clip_duration = clip_durations.get(last["clip_id"], duration)
+        max_extend = max(0.0, clip_duration - last["out"])
+        max_shorten = max(0.0, duration - 0.5)
+        if tail_adjust > 0:
+            tail_adjust = min(tail_adjust, max_extend)
+        else:
+            tail_adjust = max(tail_adjust, -max_shorten)
+        last["out"] = round(last["out"] + tail_adjust, 3)
+
+    return snapped
+
+
 def _build_random_timeline(
     proxies: list[ProxyClip],
     settings: dict[str, Any],
@@ -499,6 +570,7 @@ def build_edl(
     proxies: list[ProxyClip],
     settings: dict[str, Any],
     labels: Optional[dict[str, list[dict[str, Any]]]] = None,
+    beats: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     target_length = float(settings.get("target_length_s", 15))
     vibe = settings.get("vibe", "hype")
@@ -511,6 +583,12 @@ def build_edl(
     if not timeline:
         timeline = _build_random_timeline(proxies, settings, rng)
 
+    beat_times = []
+    snapped = 0
+    if beats:
+        beat_times = beats.get("beats", [])
+        snapped = _snap_timeline_to_beats(timeline, proxies, beat_times, target_length)
+
     edl = {
         "version": "0.1",
         "settings": {
@@ -519,8 +597,14 @@ def build_edl(
             "fps": settings.get("fps", 30),
             "vibe": vibe,
             "seed": seed,
+            "beat_sync": {
+                "enabled": bool(beat_times),
+                "snapped": snapped,
+                "tolerance_s": 0.12,
+            },
         },
         "timeline": timeline,
+        "beats": beat_times[:200],
         "effects": {
             "vhs_intensity": settings.get("vhs_intensity", 0.7),
             "glitch_amount": settings.get("glitch_amount", 0.2),
@@ -811,13 +895,40 @@ def run_job(job_id: str, clips: list[ClipInput], song_path: Path, settings: dict
             {
                 "job_id": job_id,
                 "status": "running",
-                "step": "edl",
+                "step": "beat",
                 "progress": 0.5,
+                "message": "Detecting beats",
+            },
+        )
+
+        beats = None
+        try:
+            beats = detect_beats(song_path)
+            write_beats(paths.job_dir / "beats.json", beats)
+        except Exception as exc:
+            _update_status(
+                paths,
+                {
+                    "job_id": job_id,
+                    "status": "running",
+                    "step": "beat",
+                    "progress": 0.55,
+                    "message": f"Beat detection failed, continuing: {exc}",
+                },
+            )
+
+        _update_status(
+            paths,
+            {
+                "job_id": job_id,
+                "status": "running",
+                "step": "edl",
+                "progress": 0.6,
                 "message": "Building edit decision list",
             },
         )
 
-        edl = build_edl(paths, proxies, settings, labels)
+        edl = build_edl(paths, proxies, settings, labels, beats)
 
         _update_status(
             paths,
@@ -825,7 +936,7 @@ def run_job(job_id: str, clips: list[ClipInput], song_path: Path, settings: dict
                 "job_id": job_id,
                 "status": "running",
                 "step": "render",
-                "progress": 0.7,
+                "progress": 0.72,
                 "message": "Rendering reel",
             },
         )
