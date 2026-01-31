@@ -40,7 +40,7 @@ DEFAULT_SETTINGS = {
     "vhs_engine": "ntsc-rs",
     "ntsc_preset": "custom",
     "vhs_overlay": True,
-    "resolution": "1360x1824",
+    "resolution": "1080x1920",
     "fps": 30,
     "seed": None,
     "include_clip_audio": False,

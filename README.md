@@ -48,7 +48,7 @@ VITE_API_BASE=http://localhost:8000 npm run dev
 
 ## Notes
 - Rendering is a minimal Phase 0/1 pipeline: proxies + beat sync + AI/heuristic segmenting + VHS filter + music track.
-- Default output resolution is `1360x1824` to match the input aspect ratio (override via `settings.resolution`).
+- Default output resolution is `1080x1920` (Instagram Stories 9:16). We scale+crop to fill so there are no black bars. Override via `settings.resolution`.
 - Outputs are stored in `server/jobs/{job_id}/output`.
 
 ## FastVLM tagging (AI-assisted selection)
