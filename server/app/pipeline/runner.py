@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import random
 import uuid
+from datetime import datetime, timedelta
 from dataclasses import dataclass
 from bisect import bisect_left
 from pathlib import Path
@@ -655,6 +656,100 @@ def _find_font() -> Optional[str]:
     return None
 
 
+def _load_pil_font(size: int):
+    try:
+        from PIL import ImageFont
+    except Exception:
+        return None
+    font_path = _find_font()
+    if font_path:
+        try:
+            return ImageFont.truetype(font_path, size=size)
+        except Exception:
+            return ImageFont.load_default()
+    return ImageFont.load_default()
+
+
+def _render_overlay_frames(
+    paths: JobPaths,
+    width: int,
+    height: int,
+    duration_s: float,
+    seed: int,
+) -> Optional[Path]:
+    try:
+        from PIL import Image, ImageDraw
+    except Exception:
+        return None
+
+    overlay_dir = paths.output_dir / "vhs_overlay"
+    overlay_dir.mkdir(parents=True, exist_ok=True)
+    total_frames = max(1, int(duration_s) + 1)
+    rng = random.Random(seed)
+    margin = max(24, int(width * 0.02))
+    font_size = max(20, int(height * 0.03))
+    font_small = max(16, int(font_size * 0.78))
+    line_gap = int(font_size * 0.85)
+
+    font_main = _load_pil_font(font_size)
+    font_small_obj = _load_pil_font(font_small)
+    if font_main is None or font_small_obj is None:
+        return None
+
+    base_time = datetime.now()
+
+    def draw_glitch_text(draw, text, x, y, font, align_right=False):
+        bbox = draw.textbbox((0, 0), text, font=font)
+        text_width = bbox[2] - bbox[0]
+        x_pos = width - margin - text_width if align_right else x
+        alpha = int(200 + rng.uniform(-20, 20))
+        draw.text((x_pos + 1, y - 1), text, font=font, fill=(68, 217, 255, int(alpha * 0.5)))
+        draw.text((x_pos - 1, y + 1), text, font=font, fill=(255, 59, 59, int(alpha * 0.5)))
+        draw.text((x_pos, y), text, font=font, fill=(255, 255, 255, alpha))
+
+    for second in range(total_frames):
+        image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+        timecode = str(timedelta(seconds=second))
+        if len(timecode) == 7:
+            timecode = f"0{timecode}"
+        now_time = base_time + timedelta(seconds=second)
+
+        jitter_x = rng.uniform(-2.0, 2.0)
+        jitter_y = rng.uniform(-1.0, 1.0)
+        x_left = int(margin + jitter_x)
+        y_top = int(margin + jitter_y)
+
+        draw_glitch_text(draw, "CAMERA1", x_left, y_top, font_main)
+        draw_glitch_text(draw, "PLAY >", x_left, y_top + line_gap, font_main)
+        draw_glitch_text(draw, timecode, x_left, y_top + line_gap * 2, font_small_obj)
+
+        draw_glitch_text(draw, "VCR TAPE", x_left, y_top, font_main, align_right=True)
+        draw_glitch_text(
+            draw,
+            "IPHONE",
+            x_left,
+            y_top + line_gap,
+            font_small_obj,
+            align_right=True,
+        )
+
+        y_bottom = height - line_gap * 3
+        draw_glitch_text(draw, now_time.strftime("%H:%M"), x_left, y_bottom, font_main)
+        draw_glitch_text(
+            draw,
+            now_time.strftime("%d.%m.%Y %a").upper(),
+            x_left,
+            y_bottom + line_gap,
+            font_small_obj,
+        )
+
+        frame_path = overlay_dir / f"overlay_{second:04d}.png"
+        image.save(frame_path)
+
+    return overlay_dir / "overlay_%04d.png"
+
+
 def _drawtext_glitch(
     text: str,
     x_expr: str,
@@ -734,6 +829,7 @@ def render_reel(
     width, height = _resolve_resolution(settings)
     fps = int(settings.get("fps", 30))
     target_length = float(edl["settings"]["target_length_s"])
+    seed = int(edl["settings"].get("seed", 0))
 
     inputs: list[str] = []
     for segment in timeline:
@@ -743,7 +839,6 @@ def render_reel(
             raise RuntimeError(f"Missing proxy for {clip_id}")
         inputs.extend(["-i", str(proxy.path)])
 
-    inputs.extend(["-stream_loop", "-1", "-i", str(song_path)])
 
     filter_parts: list[str] = []
     for index, segment in enumerate(timeline):
@@ -759,12 +854,24 @@ def render_reel(
         f"[vcat]fps={fps},scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos,crop={width}:{height},format=yuv420p[vscaled]"
     )
 
+    overlay_pattern: Optional[Path] = None
+    overlay_index: Optional[int] = None
     if settings.get("vhs_overlay", True):
-        overlay_filter = _vhs_overlay_filter(width, height)
-        filter_parts.append(f"[vscaled]{overlay_filter}[vbase]")
+        overlay_pattern = _render_overlay_frames(paths, width, height, target_length, seed)
+        if overlay_pattern:
+            overlay_index = len(timeline)
+            inputs.extend(["-framerate", "1", "-i", str(overlay_pattern)])
+            jitter_x = "2*sin(2*PI*t*1.6)"
+            jitter_y = "1*sin(2*PI*t*2.2)"
+            filter_parts.append(
+                f"[vscaled][{overlay_index}:v]overlay=x={jitter_x}:y={jitter_y}:shortest=1:format=auto[vbase]"
+            )
+        else:
+            filter_parts.append("[vscaled]null[vbase]")
     else:
         filter_parts.append("[vscaled]null[vbase]")
-    audio_index = len(timeline)
+    inputs.extend(["-stream_loop", "-1", "-i", str(song_path)])
+    audio_index = len(timeline) + (1 if overlay_index is not None else 0)
     filter_parts.append(
         f"[{audio_index}:a]atrim=0:{target_length},asetpts=PTS-STARTPTS[aout]"
     )
