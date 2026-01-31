@@ -3,7 +3,7 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 56;
+	objectVersion = 63;
 	objects = {
 
 /* Begin PBXBuildFile section */
@@ -187,7 +187,6 @@
 			);
 			mainGroup = AA13134E2E2F903500B03938;
 			minimizedProjectReferenceProxies = 1;
-			preferredProjectObjectVersion = 56;
 			productRefGroup = AA1313582E2F903500B03938 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -248,7 +247,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = dwarf;
-				DEVELOPMENT_TEAM = H424U49A85;
+				DEVELOPMENT_TEAM = 82SW26V2VL;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)",
@@ -270,7 +269,7 @@
 				);
 				MARKETING_VERSION = 1.0.0;
 				OTHER_LDFLAGS = "-ObjC";
-				PRODUCT_BUNDLE_IDENTIFIER = com.qcwx.dev.QCSDKDemo;
+				PRODUCT_BUNDLE_IDENTIFIER = com.motasimrahman.moments.glassesbridge;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				TARGETED_DEVICE_FAMILY = 1;
@@ -286,7 +285,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = dwarf;
-				DEVELOPMENT_TEAM = H424U49A85;
+				DEVELOPMENT_TEAM = 82SW26V2VL;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)",
@@ -308,7 +307,7 @@
 				);
 				MARKETING_VERSION = 1.0.0;
 				OTHER_LDFLAGS = "-ObjC";
-				PRODUCT_BUNDLE_IDENTIFIER = com.qcwx.dev.QCSDKDemo;
+				PRODUCT_BUNDLE_IDENTIFIER = com.motasimrahman.moments.glassesbridge;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				TARGETED_DEVICE_FAMILY = 1;
