@@ -66,6 +66,23 @@ function formatDate(value: string) {
   return parsed.toLocaleString()
 }
 
+function parseTimecode(value: string) {
+  const raw = value.trim()
+  if (!raw) return null
+  if (/^\d+(\.\d+)?$/.test(raw)) {
+    return Number(raw)
+  }
+  const parts = raw.split(':').map((part) => Number(part))
+  if (parts.some((part) => Number.isNaN(part))) return null
+  if (parts.length === 2) {
+    return parts[0] * 60 + parts[1]
+  }
+  if (parts.length === 3) {
+    return parts[0] * 3600 + parts[1] * 60 + parts[2]
+  }
+  return null
+}
+
 function App() {
   const [clips, setClips] = useState<ClipItem[]>([])
   const [song, setSong] = useState<File | null>(null)
@@ -75,6 +92,9 @@ function App() {
   const [vhsIntensity, setVhsIntensity] = useState(0.7)
   const [glitchAmount, setGlitchAmount] = useState(0.2)
   const [includeClipAudio, setIncludeClipAudio] = useState(false)
+  const [songSection, setSongSection] = useState<'auto_energy' | 'manual'>('auto_energy')
+  const [songStartInput, setSongStartInput] = useState('00:45')
+  const [songSnap, setSongSnap] = useState<'downbeat' | 'beat' | 'none'>('downbeat')
   const [resolution, setResolution] = useState<'1080x1920' | '1280x960' | '1360x1824'>(
     '1080x1920',
   )
@@ -142,6 +162,16 @@ function App() {
       return
     }
 
+    let songStartSeconds: number | null = null
+    if (songSection === 'manual') {
+      const parsed = parseTimecode(songStartInput)
+      if (parsed === null) {
+        setError('Manual song start must be a time like 0:45 or 75')
+        return
+      }
+      songStartSeconds = parsed
+    }
+
     const settingsPayload = JSON.stringify({
       target_length_s: targetLength,
       vibe,
@@ -151,6 +181,10 @@ function App() {
       locked_clips: lockedClipNames,
       ntsc_preset: ntscPreset,
       resolution,
+      song_section: songSection,
+      song_start_s: songStartSeconds,
+      song_snap: songSnap,
+      song_min_start_s: 0,
       seed: Math.floor(Math.random() * 1_000_000),
     })
 
@@ -618,6 +652,42 @@ function App() {
                 </button>
               ))}
             </div>
+          </div>
+          <div className="setting">
+            <label>Song section</label>
+            <div className="segmented">
+              <button
+                className={songSection === 'auto_energy' ? 'active' : ''}
+                onClick={() => setSongSection('auto_energy')}
+              >
+                Auto (best part)
+              </button>
+              <button
+                className={songSection === 'manual' ? 'active' : ''}
+                onClick={() => setSongSection('manual')}
+              >
+                Manual start
+              </button>
+            </div>
+            {songSection === 'manual' && (
+              <div className="time-input">
+                <input
+                  type="text"
+                  value={songStartInput}
+                  onChange={(event) => setSongStartInput(event.target.value)}
+                  placeholder="0:45"
+                />
+                <span>mm:ss</span>
+              </div>
+            )}
+          </div>
+          <div className="setting">
+            <label>Start snap</label>
+            <select value={songSnap} onChange={(event) => setSongSnap(event.target.value as 'downbeat' | 'beat' | 'none')}>
+              <option value="downbeat">Downbeat</option>
+              <option value="beat">Nearest beat</option>
+              <option value="none">No snap</option>
+            </select>
           </div>
           <div className="setting">
             <label>VHS intensity</label>

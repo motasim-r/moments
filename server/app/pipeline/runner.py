@@ -11,6 +11,7 @@ from typing import Any, Callable, Optional
 
 from app.ai.fastvlm import tag_frame
 from app.audio.beat import detect_beats, write_beats
+from app.audio.segment import SongSegment, select_song_segment, slice_beats
 from app.utils.ffmpeg import FFmpegError, ffprobe_duration, run_ffmpeg
 from app.utils.ntsc import run_ntsc_cli
 from app.utils.paths import JobPaths, ROOT_DIR, ensure_job_dirs
@@ -45,6 +46,10 @@ DEFAULT_SETTINGS = {
     "seed": None,
     "include_clip_audio": False,
     "locked_clips": [],
+    "song_section": "auto_energy",
+    "song_start_s": None,
+    "song_snap": "downbeat",
+    "song_min_start_s": 0.0,
 }
 
 NTSC_PRESETS = {
@@ -584,6 +589,7 @@ def build_edl(
     settings: dict[str, Any],
     labels: Optional[dict[str, list[dict[str, Any]]]] = None,
     beats: Optional[dict[str, Any]] = None,
+    song_segment: Optional[SongSegment] = None,
 ) -> dict[str, Any]:
     target_length = float(settings.get("target_length_s", 15))
     vibe = settings.get("vibe", "hype")
@@ -602,6 +608,16 @@ def build_edl(
         beat_times = beats.get("beats", [])
         snapped = _snap_timeline_to_beats(timeline, proxies, beat_times, target_length)
 
+    segment_payload = None
+    if song_segment is not None:
+        segment_payload = {
+            "start_s": song_segment.start_s,
+            "end_s": song_segment.end_s,
+            "method": song_segment.method,
+            "snap": song_segment.snap,
+            "loop_audio": song_segment.loop_audio,
+        }
+
     edl = {
         "version": "0.1",
         "settings": {
@@ -615,6 +631,7 @@ def build_edl(
                 "snapped": snapped,
                 "tolerance_s": 0.12,
             },
+            "song_segment": segment_payload,
         },
         "timeline": timeline,
         "beats": beat_times[:200],
@@ -865,8 +882,15 @@ def render_reel(
         filter_parts.append("[vscaled]null[vbase]")
     inputs.extend(["-stream_loop", "-1", "-i", str(song_path)])
     audio_index = len(timeline) + (1 if overlay_index is not None else 0)
+    song_segment = edl.get("settings", {}).get("song_segment") if isinstance(edl, dict) else None
+    audio_start = 0.0
+    if isinstance(song_segment, dict):
+        try:
+            audio_start = float(song_segment.get("start_s", 0.0))
+        except (TypeError, ValueError):
+            audio_start = 0.0
     filter_parts.append(
-        f"[{audio_index}:a]atrim=0:{target_length},asetpts=PTS-STARTPTS[aout]"
+        f"[{audio_index}:a]atrim=start={audio_start}:duration={target_length},asetpts=PTS-STARTPTS[aout]"
     )
 
     filter_complex = ";".join(filter_parts)
@@ -1079,25 +1103,54 @@ def run_job(job_id: str, clips: list[ClipInput], song_path: Path, settings: dict
             {
                 "job_id": job_id,
                 "status": "running",
-                "step": "beat",
-                "progress": 0.5,
-                "message": "Detecting beats",
+                "step": "song",
+                "progress": 0.48,
+                "message": "Selecting best song segment",
             },
         )
 
+        beats_full = None
+        segment: Optional[SongSegment] = None
         beats = None
         try:
-            beats = detect_beats(song_path)
+            beats_full = detect_beats(song_path)
+            target_length = float(settings.get("target_length_s", 15))
+            song_section = settings.get("song_section", "auto_energy")
+            song_start = settings.get("song_start_s")
+            song_min_start = float(settings.get("song_min_start_s", 0.0))
+            song_snap = settings.get("song_snap", "downbeat")
+            if song_section == "manual" and song_start is not None:
+                song_min_start = float(song_start)
+
+            segment = select_song_segment(
+                song_path=song_path,
+                target_length_s=target_length,
+                method=song_section,
+                min_start_s=song_min_start,
+                snap_to=song_snap,
+                beats_full=beats_full,
+            )
+            beats = slice_beats(beats_full, segment.start_s, segment.end_s)
             write_beats(paths.job_dir / "beats.json", beats)
+            _update_status(
+                paths,
+                {
+                    "job_id": job_id,
+                    "status": "running",
+                    "step": "song",
+                    "progress": 0.52,
+                    "message": f"Using song segment {segment.start_s:.2f}s–{segment.end_s:.2f}s",
+                },
+            )
         except Exception as exc:
             _update_status(
                 paths,
                 {
                     "job_id": job_id,
                     "status": "running",
-                    "step": "beat",
-                    "progress": 0.55,
-                    "message": f"Beat detection failed, continuing: {exc}",
+                    "step": "song",
+                    "progress": 0.52,
+                    "message": f"Song segment selection failed, continuing: {exc}",
                 },
             )
 
@@ -1112,7 +1165,7 @@ def run_job(job_id: str, clips: list[ClipInput], song_path: Path, settings: dict
             },
         )
 
-        edl = build_edl(paths, proxies, settings, labels, beats)
+        edl = build_edl(paths, proxies, settings, labels, beats, segment)
 
         _update_status(
             paths,

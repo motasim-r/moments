@@ -286,6 +286,26 @@
   font-weight: 600;
 }
 
+.time-input {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.time-input input {
+  flex: 1;
+  min-width: 120px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.time-input span {
+  font-size: 0.85rem;
+  color: var(--ink-soft);
+}
+
 .segmented {
   display: flex;
   gap: 8px;
